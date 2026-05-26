@@ -1,18 +1,32 @@
+import json
+import os
+
 from block import Block
 from transaction import Transaction
 
 
 class Blockchain:
-    def __init__(self, difficulty: int = 4, mining_reward: int = 50):
+    def __init__(
+        self,
+        difficulty: int = 4,
+        mining_reward: int = 50,
+        storage_path: str = "/data/chain.json",
+        auto_load: bool = True,
+    ):
         self.difficulty = difficulty
         self.mining_reward = mining_reward
+        self.storage_path = storage_path
 
-        self.chain = [self.create_genesis_block()]
-
+        self.chain: list[Block] = []
         self.balances: dict[str, int] = {}
         self.nonces: dict[str, int] = {}
-
         self.mempool: list[Transaction] = []
+
+        if auto_load and os.path.exists(self.storage_path):
+            self.load_from_disk()
+        else:
+            self.chain = [self.create_genesis_block()]
+            self.save_to_disk()
 
     def create_genesis_block(self) -> Block:
         genesis = Block(
@@ -29,6 +43,89 @@ class Blockchain:
 
     def get_state(self) -> tuple[dict[str, int], dict[str, int]]:
         return self.balances.copy(), self.nonces.copy()
+
+    def get_balance(self, address: str) -> int:
+        return self.balances.get(address, 0)
+
+    def get_next_nonce(self, address: str) -> int:
+        return self.nonces.get(address, 0) + 1
+
+    def save_to_disk(self) -> None:
+        directory = os.path.dirname(self.storage_path)
+
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        data = {
+            "difficulty": self.difficulty,
+            "mining_reward": self.mining_reward,
+            "chain": [block.to_dict() for block in self.chain],
+            "mempool": [tx.to_dict() for tx in self.mempool],
+        }
+
+        with open(self.storage_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=2)
+
+    def load_from_disk(self) -> None:
+        with open(self.storage_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        self.difficulty = data.get("difficulty", self.difficulty)
+        self.mining_reward = data.get("mining_reward", self.mining_reward)
+
+        self.chain = [
+            Block.from_dict(block_data)
+            for block_data in data.get("chain", [])
+        ]
+
+        if len(self.chain) == 0:
+            self.chain = [self.create_genesis_block()]
+
+        self.mempool = [
+            Transaction.from_dict(tx_data)
+            for tx_data in data.get("mempool", [])
+        ]
+
+        self.rebuild_state()
+
+        if not self.is_valid():
+            raise ValueError("Loaded blockchain is invalid.")
+
+        self.clean_mempool()
+        self.save_to_disk()
+
+    def rebuild_state(self) -> None:
+        balances: dict[str, int] = {}
+        nonces: dict[str, int] = {}
+
+        for block in self.chain[1:]:
+            if not self._apply_block_transactions(block, balances, nonces):
+                raise ValueError("Cannot rebuild state: invalid block detected.")
+
+        self.balances = balances
+        self.nonces = nonces
+
+    def clean_mempool(self) -> None:
+        valid_transactions: list[Transaction] = []
+
+        temp_balances = self.balances.copy()
+        temp_nonces = self.nonces.copy()
+
+        for tx in self.mempool:
+            test_balances = temp_balances.copy()
+            test_nonces = temp_nonces.copy()
+
+            if self._apply_regular_transaction(tx, test_balances, test_nonces):
+                valid_transactions.append(tx)
+                temp_balances = test_balances
+                temp_nonces = test_nonces
+
+        removed = len(self.mempool) - len(valid_transactions)
+
+        if removed > 0:
+            print(f"Removed {removed} invalid transaction(s) from mempool.")
+
+        self.mempool = valid_transactions
 
     def add_transaction(self, transaction: Transaction) -> bool:
         if transaction.is_coinbase():
@@ -56,6 +153,8 @@ class Blockchain:
             return False
 
         self.mempool.append(transaction)
+        self.save_to_disk()
+
         print("Transaction added to mempool.")
         return True
 
@@ -73,10 +172,13 @@ class Blockchain:
 
         if block_added:
             selected_ids = {id(tx) for tx in selected_transactions}
+
             self.mempool = [
                 tx for tx in self.mempool
                 if id(tx) not in selected_ids
             ]
+
+            self.save_to_disk()
 
         return block_added
 
@@ -162,14 +264,13 @@ class Blockchain:
         print(
             f"Mining block {block_index} with "
             f"{len(transactions)} transaction(s) "
-            f"and {total_fees} QPOW fee(s)..."
+            f"and {total_fees} QCOIN fee(s)..."
         )
 
         new_block.mine()
         print(f"Block mined: {new_block.hash}")
 
         self.chain.append(new_block)
-
         self.balances = temp_balances
         self.nonces = temp_nonces
 
@@ -181,6 +282,9 @@ class Blockchain:
         balances: dict[str, int],
         nonces: dict[str, int],
     ) -> bool:
+        if not block.verify_merkle_root():
+            return False
+
         if block.index == 0:
             return len(block.transactions) == 0
 
@@ -290,6 +394,12 @@ class Blockchain:
             return False
 
         genesis = self.chain[0]
+
+        if genesis.index != 0:
+            return False
+
+        if genesis.previous_hash != "0":
+            return False
 
         if genesis.hash != genesis.compute_hash():
             return False
