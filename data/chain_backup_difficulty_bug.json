@@ -1,5 +1,5 @@
 {
-  "difficulty": 5,
+  "difficulty": 3,
   "mining_reward": 50,
   "target_block_time": 10,
   "difficulty_adjustment_interval": 5,
@@ -10,26 +10,26 @@
         "previous_hash": "0",
         "merkle_root": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
         "difficulty": 4,
-        "timestamp": 1779925427.343863,
-        "nonce": 22859
+        "timestamp": 1779923927.958847,
+        "nonce": 136092
       },
-      "hash": "0000e95ebc9e495ef90dd17105f4cebe81dee7d4177fc89917344fa1ede29dfc",
+      "hash": "00000016b89c5587ea05628c28e291ab487f013487ab4b850a331313d4011946",
       "transactions": []
     },
     {
       "header": {
         "index": 1,
-        "previous_hash": "0000e95ebc9e495ef90dd17105f4cebe81dee7d4177fc89917344fa1ede29dfc",
-        "merkle_root": "7d03d8e6b376fc5dbe6e0d53f5148f245a57da1b3f51ed0a19da81f47d848b3c",
+        "previous_hash": "00000016b89c5587ea05628c28e291ab487f013487ab4b850a331313d4011946",
+        "merkle_root": "22049c93097c20fbcbb2c51b1bbfcf836a294da73430f0743493cd5176268cec",
         "difficulty": 4,
-        "timestamp": 1779925799.699587,
-        "nonce": 59916
+        "timestamp": 1779924081.500969,
+        "nonce": 67323
       },
-      "hash": "000099bc18b85746ff44c828273b0c9bf22285fa3738ac4cc9efaead2dd0e8ae",
+      "hash": "0000f6376047b67e4af4aef8da1bb13a32a038517b527e1f5668f4018b618ee0",
       "transactions": [
         {
           "sender": "COINBASE",
-          "receiver": "10efef8e846429f93fdab087978fa6018deda59e",
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
           "amount": 50,
           "nonce": 1,
           "fee": 0,
@@ -40,13 +40,13 @@
     {
       "header": {
         "index": 2,
-        "previous_hash": "000099bc18b85746ff44c828273b0c9bf22285fa3738ac4cc9efaead2dd0e8ae",
+        "previous_hash": "0000f6376047b67e4af4aef8da1bb13a32a038517b527e1f5668f4018b618ee0",
         "merkle_root": "798cf0782aee3f514fc2079787be281fa55ed00757de639aaaa8d469e5ffefc5",
         "difficulty": 4,
-        "timestamp": 1779925803.664791,
-        "nonce": 156532
+        "timestamp": 1779924081.798252,
+        "nonce": 122356
       },
-      "hash": "0000e042eadbf6030a3030dcd22c88101b78fd9a93cc5e5c87f17e28e6b1ae84",
+      "hash": "0000d8f2b3a400209b62cc15d9b5e20571df8eaa107edb8f4c75f6ab47c2e310",
       "transactions": [
         {
           "sender": "COINBASE",
@@ -61,13 +61,13 @@
     {
       "header": {
         "index": 3,
-        "previous_hash": "0000e042eadbf6030a3030dcd22c88101b78fd9a93cc5e5c87f17e28e6b1ae84",
+        "previous_hash": "0000d8f2b3a400209b62cc15d9b5e20571df8eaa107edb8f4c75f6ab47c2e310",
         "merkle_root": "e4885beb32ec53738ac92b4f8994b391050f8939f68fca8757f5598afb1d526a",
         "difficulty": 4,
-        "timestamp": 1779925804.2611141,
-        "nonce": 70947
+        "timestamp": 1779924082.2739809,
+        "nonce": 34921
       },
-      "hash": "0000917da2bfed0b9d9375554ac29c6c086aff51500bfc2bebdff96602fb6cb5",
+      "hash": "0000f4ec1eca9ac2257eec5b6eb87539380e73c9210db57567eb8b9060d97566",
       "transactions": [
         {
           "sender": "COINBASE",
@@ -82,13 +82,13 @@
     {
       "header": {
         "index": 4,
-        "previous_hash": "0000917da2bfed0b9d9375554ac29c6c086aff51500bfc2bebdff96602fb6cb5",
+        "previous_hash": "0000f4ec1eca9ac2257eec5b6eb87539380e73c9210db57567eb8b9060d97566",
         "merkle_root": "d9204cc86a1f59de195eb2b60a03865f8fb58301b209c26aeafb0e83b8b67760",
         "difficulty": 4,
-        "timestamp": 1779925804.5631459,
-        "nonce": 66302
+        "timestamp": 1779924082.455507,
+        "nonce": 185810
       },
-      "hash": "00005872ecdf2bcaef3c5b1d0af0bba02d677a5e15d6c69186da321fd228904b",
+      "hash": "0000965145a45184d90ac0e072f10937c10b63a01acae94d38ee77d8415a405f",
       "transactions": [
         {
           "sender": "COINBASE",
@@ -103,13 +103,13 @@
     {
       "header": {
         "index": 5,
-        "previous_hash": "00005872ecdf2bcaef3c5b1d0af0bba02d677a5e15d6c69186da321fd228904b",
+        "previous_hash": "0000965145a45184d90ac0e072f10937c10b63a01acae94d38ee77d8415a405f",
         "merkle_root": "61bfbe9c7db8b8277af5447819a3fc4e9e8a379802482eec730491e1ee91e680",
-        "difficulty": 4,
-        "timestamp": 1779925804.848386,
-        "nonce": 99704
+        "difficulty": 3,
+        "timestamp": 1779924083.148121,
+        "nonce": 7872
       },
-      "hash": "00003a367a01acaa9666eca867817cb3a1630816a1e62d7ed7f7442f2723d171",
+      "hash": "000343be14fac78c8f435af1aa9ff37719c2e9142726666295c7cc0806a4da8d",
       "transactions": [
         {
           "sender": "COINBASE",
@@ -124,21 +124,29 @@
     {
       "header": {
         "index": 6,
-        "previous_hash": "00003a367a01acaa9666eca867817cb3a1630816a1e62d7ed7f7442f2723d171",
-        "merkle_root": "5f632913a082af3f0c8d0c8993ed4dfc1b5277e6f22a9f938780d6adce577bde",
-        "difficulty": 5,
-        "timestamp": 1779925805.2489831,
-        "nonce": 226381
+        "previous_hash": "000343be14fac78c8f435af1aa9ff37719c2e9142726666295c7cc0806a4da8d",
+        "merkle_root": "9487936b78e1c6b15cb6b93b28f53cd1b3a789327ddb64ac0fc743ba77b9de44",
+        "difficulty": 3,
+        "timestamp": 1779924160.871744,
+        "nonce": 1637
       },
-      "hash": "000006eb138c4aca370b6621d4b68b41cbb467e04ad190cdb676b7a7e64420b4",
+      "hash": "0003e068d631e2d9791f7502b3b10774b6d990ca0c4ca7936b9b4b4ff7769a42",
       "transactions": [
         {
           "sender": "COINBASE",
-          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
-          "amount": 50,
+          "receiver": "10efef8e846429f93fdab087978fa6018deda59e",
+          "amount": 55,
           "nonce": 6,
           "fee": 0,
           "signature": null
+        },
+        {
+          "sender": "65afd71e21917ca4f7806a4839cb688be837b5e6c1b10dc0f1f58a1338663ac1",
+          "receiver": "b36df18622f1e635d6c6374ff0f7ea058cc3bc1c",
+          "amount": 75,
+          "nonce": 1,
+          "fee": 5,
+          "signature": "a6aa01110153e22898ef75598fc7ea9515ee62f4e876d0cae114664fae9398f67ef9886f940518917d3a9c61fc0a41c161bdea70840655103011a8b6663e360f"
         }
       ]
     }

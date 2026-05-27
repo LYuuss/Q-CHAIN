@@ -1,0 +1,19 @@
+from pathlib import Path
+
+
+PROJECT_NAME = "QChain"
+COIN_NAME = "QCOIN"
+
+DEFAULT_DIFFICULTY = 4
+DEFAULT_MINING_REWARD = 50
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+WALLETS_DIR = DATA_DIR / "wallets"
+CHAIN_PATH = DATA_DIR / "chain.json"
+
+TARGET_BLOCK_TIME_SECONDS = 10
+DIFFICULTY_ADJUSTMENT_INTERVAL = 5
+
+MIN_DIFFICULTY = 1
+MAX_DIFFICULTY = 8

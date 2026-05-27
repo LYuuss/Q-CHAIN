@@ -3,19 +3,31 @@ import os
 
 from block import Block
 from transaction import Transaction
-
+from config import (
+    COIN_NAME,
+    TARGET_BLOCK_TIME_SECONDS,
+    DIFFICULTY_ADJUSTMENT_INTERVAL,
+    MIN_DIFFICULTY,
+    MAX_DIFFICULTY,
+)
 
 class Blockchain:
     def __init__(
         self,
         difficulty: int = 4,
         mining_reward: int = 50,
-        storage_path: str = "/data/chain.json",
+        storage_path: str = "../data/chain.json",
         auto_load: bool = True,
     ):
         self.difficulty = difficulty
+        self.initial_difficulty = difficulty
         self.mining_reward = mining_reward
         self.storage_path = storage_path
+
+        self.target_block_time = TARGET_BLOCK_TIME_SECONDS
+        self.difficulty_adjustment_interval = DIFFICULTY_ADJUSTMENT_INTERVAL
+        self.min_difficulty = MIN_DIFFICULTY
+        self.max_difficulty = MAX_DIFFICULTY
 
         self.chain: list[Block] = []
         self.balances: dict[str, int] = {}
@@ -59,6 +71,8 @@ class Blockchain:
         data = {
             "difficulty": self.difficulty,
             "mining_reward": self.mining_reward,
+            "target_block_time": self.target_block_time,
+            "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
             "chain": [block.to_dict() for block in self.chain],
             "mempool": [tx.to_dict() for tx in self.mempool],
         }
@@ -72,6 +86,21 @@ class Blockchain:
 
         self.difficulty = data.get("difficulty", self.difficulty)
         self.mining_reward = data.get("mining_reward", self.mining_reward)
+        
+        self.initial_difficulty = data.get(
+            "initial_difficulty",
+            data.get("difficulty", self.initial_difficulty),
+        )
+
+        self.target_block_time = data.get(
+            "target_block_time",
+            self.target_block_time,
+        )
+
+        self.difficulty_adjustment_interval = data.get(
+            "difficulty_adjustment_interval",
+            self.difficulty_adjustment_interval,
+        )
 
         self.chain = [
             Block.from_dict(block_data)
@@ -92,6 +121,9 @@ class Blockchain:
             raise ValueError("Loaded blockchain is invalid.")
 
         self.clean_mempool()
+
+        self.difficulty = self.calculate_next_difficulty()
+
         self.save_to_disk()
 
     def rebuild_state(self) -> None:
@@ -246,11 +278,13 @@ class Blockchain:
         temp_balances = self.balances.copy()
         temp_nonces = self.nonces.copy()
 
+        next_difficulty = self.calculate_next_difficulty()
+
         new_block = Block(
             index=block_index,
             previous_hash=self.latest_block().hash,
             transactions=[tx.to_dict() for tx in all_transactions],
-            difficulty=self.difficulty,
+            difficulty=next_difficulty,
         )
 
         if not self._apply_block_transactions(
@@ -263,8 +297,9 @@ class Blockchain:
 
         print(
             f"Mining block {block_index} with "
-            f"{len(transactions)} transaction(s) "
-            f"and {total_fees} QCOIN fee(s)..."
+            f"{len(transactions)} transaction(s), "
+            f"{total_fees} {COIN_NAME} fee(s), "
+            f"difficulty={next_difficulty}..."
         )
 
         new_block.mine()
@@ -273,6 +308,7 @@ class Blockchain:
         self.chain.append(new_block)
         self.balances = temp_balances
         self.nonces = temp_nonces
+        self.difficulty = self.calculate_next_difficulty()
 
         return True
 
@@ -414,6 +450,14 @@ class Blockchain:
             current = self.chain[i]
             previous = self.chain[i - 1]
 
+            expected_difficulty = self._calculate_expected_difficulty_for_index(
+                block_index=i,
+                chain=self.chain,
+            )
+
+            if current.difficulty != expected_difficulty:
+                return False
+
             if current.index != i:
                 return False
 
@@ -440,6 +484,59 @@ class Blockchain:
 
             print(
                 f"{index}. {sender_address} -> {tx.receiver} | "
-                f"amount={tx.amount} | fee={tx.fee} | "
-                f"total_cost={total_cost} | nonce={tx.nonce}"
+                f"amount={tx.amount} {COIN_NAME} | "
+                f"fee={tx.fee} {COIN_NAME} | "
+                f"total_cost={total_cost} {COIN_NAME} | "
+                f"nonce={tx.nonce}"
             )
+
+    def _clamp_difficulty(self, difficulty: int) -> int:
+        return max(
+            self.min_difficulty,
+            min(self.max_difficulty, difficulty),
+        )
+
+    def _calculate_expected_difficulty_for_index(
+        self,
+        block_index: int,
+        chain: list[Block],
+        ) -> int:
+        if block_index == 0:
+            return self.initial_difficulty
+
+        previous_difficulty = chain[block_index - 1].difficulty
+
+        if block_index <= self.difficulty_adjustment_interval:
+            return previous_difficulty
+
+        if (block_index - 1) % self.difficulty_adjustment_interval != 0:
+            return previous_difficulty
+
+        start_index = block_index - self.difficulty_adjustment_interval
+        end_index = block_index - 1
+
+        start_block = chain[start_index]
+        end_block = chain[end_index]
+
+        actual_duration = end_block.timestamp - start_block.timestamp
+
+        expected_duration = (
+            self.difficulty_adjustment_interval - 1
+        ) * self.target_block_time
+
+        if actual_duration <= 0:
+            return self._clamp_difficulty(previous_difficulty + 1)
+
+        if actual_duration < expected_duration / 2:
+            return self._clamp_difficulty(previous_difficulty + 1)
+
+        if actual_duration > expected_duration * 2:
+            return self._clamp_difficulty(previous_difficulty - 1)
+
+        return previous_difficulty
+    
+    def calculate_next_difficulty(self) -> int:
+        return self._calculate_expected_difficulty_for_index(
+            block_index=len(self.chain),
+            chain=self.chain,
+        )
