@@ -1,8 +1,13 @@
 import argparse
 import getpass
+import json
+import urllib.error
+import urllib.request
+from typing import Any
 
 from blockchain import Blockchain
 from wallet import Wallet
+from transaction import Transaction
 from config import (
     PROJECT_NAME,
     COIN_NAME,
@@ -11,6 +16,89 @@ from config import (
     WALLETS_DIR,
     CHAIN_PATH,
 )
+
+
+class HttpJsonError(Exception):
+    def __init__(self, status_code: int, body: dict[str, Any] | None, raw_body: str):
+        self.status_code = status_code
+        self.body = body
+        self.raw_body = raw_body
+
+        message = f"HTTP {status_code}"
+
+        if body is not None:
+            message += f": {body}"
+        elif raw_body:
+            message += f": {raw_body}"
+
+        super().__init__(message)
+
+
+def parse_json_body(raw_body: str) -> dict[str, Any] | None:
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError:
+        return None
+
+
+def fetch_json(url: str, timeout: int = 5) -> dict[str, Any]:
+    request_obj = urllib.request.Request(
+        url=url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body)
+
+    except urllib.error.HTTPError as error:
+        raw_body = error.read().decode("utf-8")
+        json_body = parse_json_body(raw_body)
+        raise HttpJsonError(error.code, json_body, raw_body) from error
+
+
+def post_json(url: str, payload: dict[str, Any], timeout: int = 5) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+
+    request_obj = urllib.request.Request(
+        url=url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8")
+            return json.loads(response_body)
+
+    except urllib.error.HTTPError as error:
+        raw_body = error.read().decode("utf-8")
+        json_body = parse_json_body(raw_body)
+        raise HttpJsonError(error.code, json_body, raw_body) from error
+
+
+def print_json(data: dict[str, Any]) -> None:
+    print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def normalize_node_url(node: str) -> str:
+    clean_node = str(node).strip().rstrip("/")
+
+    if clean_node.isdigit():
+        return f"http://127.0.0.1:{clean_node}"
+
+    if not clean_node.startswith(("http://", "https://")):
+        return "http://" + clean_node
+
+    return clean_node
 
 
 def load_chain() -> Blockchain:
@@ -133,12 +221,32 @@ def get_next_available_nonce(chain: Blockchain, address: str) -> int:
     return current_nonce + 1
 
 
+def get_next_available_nonce_from_node(node_url: str, address: str) -> int:
+    balance_data = fetch_json(f"{node_url}/balances/{address}")
+    current_nonce = balance_data.get("confirmed_nonce", 0)
+
+    mempool_data = fetch_json(f"{node_url}/mempool")
+
+    for tx_data in mempool_data.get("transactions", []):
+        try:
+            transaction = Transaction.from_dict(tx_data)
+
+            if transaction.sender_address() == address and transaction.nonce > current_nonce:
+                current_nonce = transaction.nonce
+
+        except (KeyError, ValueError):
+            continue
+
+    return current_nonce + 1
+
+
 def print_status(chain: Blockchain) -> None:
     print(f"{PROJECT_NAME} status")
     print("-" * (len(PROJECT_NAME) + 7))
     print(f"Height: {len(chain.chain) - 1}")
     print(f"Latest hash: {chain.latest_block().hash}")
     print(f"Next block difficulty: {chain.calculate_next_difficulty()}")
+    print(f"Cumulative work: {chain.calculate_cumulative_work()}")
     print(f"Target block time: {chain.target_block_time}s")
     print(f"Difficulty adjustment interval: {chain.difficulty_adjustment_interval} blocks")
     print(f"Mining reward: {chain.mining_reward} {COIN_NAME}")
@@ -263,7 +371,7 @@ def command_send(args) -> None:
     added = chain.add_transaction(tx)
 
     if added:
-        print("Transaction created and added to mempool.")
+        print("Transaction created and added to local mempool.")
         print(f"From: {args.sender}")
         print(f"Sender address: {sender_wallet.address}")
         print(f"To: {args.receiver}")
@@ -289,6 +397,111 @@ def command_validate(args) -> None:
         print("Blockchain is invalid.")
 
 
+def command_node_status(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/status")
+    print_json(response)
+
+
+def command_node_mempool(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/mempool")
+    print_json(response)
+
+
+def command_node_sync(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = post_json(f"{node_url}/sync", {})
+    print_json(response)
+
+def command_node_connect(args) -> None:
+    node_a_url = normalize_node_url(args.node_a)
+    node_b_url = normalize_node_url(args.node_b)
+
+    response_a = post_json(
+        url=f"{node_a_url}/peers",
+        payload={
+            "url": node_b_url,
+        },
+    )
+
+    response_b = post_json(
+        url=f"{node_b_url}/peers",
+        payload={
+            "url": node_a_url,
+        },
+    )
+
+    print("Nodes connected successfully.")
+    print()
+    print(f"Node A: {node_a_url}")
+    print(f"Node B: {node_b_url}")
+    print()
+    print("Node A response:")
+    print_json(response_a)
+    print()
+    print("Node B response:")
+    print_json(response_b)
+
+def command_node_mine(args) -> None:
+    node_url = normalize_node_url(args.node)
+    miner_metadata = load_wallet_metadata(args.miner)
+
+    payload = {
+        "miner_address": miner_metadata["address"],
+    }
+
+    if args.max_tx is not None:
+        payload["max_transactions"] = args.max_tx
+
+    response = post_json(f"{node_url}/mine", payload)
+    print_json(response)
+
+
+def command_node_send(args) -> None:
+    node_url = normalize_node_url(args.node)
+
+    sender_wallet = load_wallet_for_signing(args.sender)
+    receiver_address = resolve_receiver_address(args.receiver)
+
+    if args.amount <= 0:
+        raise ValueError("Amount must be positive.")
+
+    if args.fee < 0:
+        raise ValueError("Fee cannot be negative.")
+
+    nonce = get_next_available_nonce_from_node(
+        node_url=node_url,
+        address=sender_wallet.address,
+    )
+
+    transaction = sender_wallet.create_transaction(
+        receiver_address=receiver_address,
+        amount=args.amount,
+        nonce=nonce,
+        fee=args.fee,
+    )
+
+    response = post_json(
+        url=f"{node_url}/transactions",
+        payload={
+            "transaction": transaction.to_dict(),
+        },
+    )
+
+    print("Transaction sent to node.")
+    print(f"Node: {node_url}")
+    print(f"From: {args.sender}")
+    print(f"Sender address: {sender_wallet.address}")
+    print(f"To: {args.receiver}")
+    print(f"Receiver address: {receiver_address}")
+    print(f"Amount: {args.amount} {COIN_NAME}")
+    print(f"Fee: {args.fee} {COIN_NAME}")
+    print(f"Nonce: {nonce}")
+    print()
+    print_json(response)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=f"{PROJECT_NAME} command line interface"
@@ -301,7 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = subparsers.add_parser(
         "status",
-        help="Show blockchain status",
+        help="Show local blockchain status",
     )
     status_parser.set_defaults(func=command_status)
 
@@ -327,14 +540,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     balance_parser = subparsers.add_parser(
         "balance",
-        help="Show wallet balance",
+        help="Show local wallet balance",
     )
     balance_parser.add_argument("name")
     balance_parser.set_defaults(func=command_balance)
 
     mine_parser = subparsers.add_parser(
         "mine",
-        help="Mine pending transactions",
+        help="Mine pending transactions on the local chain",
     )
     mine_parser.add_argument("miner")
     mine_parser.add_argument(
@@ -347,7 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     send_parser = subparsers.add_parser(
         "send",
-        help="Send QCOIN from one wallet to another",
+        help="Send QCOIN on the local chain",
     )
     send_parser.add_argument("sender")
     send_parser.add_argument("receiver")
@@ -362,15 +575,73 @@ def build_parser() -> argparse.ArgumentParser:
 
     mempool_parser = subparsers.add_parser(
         "mempool",
-        help="Show pending transactions",
+        help="Show local pending transactions",
     )
     mempool_parser.set_defaults(func=command_mempool)
 
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Validate the blockchain",
+        help="Validate the local blockchain",
     )
     validate_parser.set_defaults(func=command_validate)
+
+    node_status_parser = subparsers.add_parser(
+        "node-status",
+        help="Show HTTP node status",
+    )
+    node_status_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_status_parser.set_defaults(func=command_node_status)
+
+    node_mempool_parser = subparsers.add_parser(
+        "node-mempool",
+        help="Show HTTP node mempool",
+    )
+    node_mempool_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_mempool_parser.set_defaults(func=command_node_mempool)
+
+    node_sync_parser = subparsers.add_parser(
+        "node-sync",
+        help="Synchronize an HTTP node with its peers",
+    )
+    node_sync_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_sync_parser.set_defaults(func=command_node_sync)
+    
+    node_connect_parser = subparsers.add_parser(
+        "node-connect",
+        help="Connect two HTTP nodes together",
+    )
+    node_connect_parser.add_argument("node_a", help="First node port or URL, example: 5001")
+    node_connect_parser.add_argument("node_b", help="Second node port or URL, example: 5002")
+    node_connect_parser.set_defaults(func=command_node_connect)
+    node_mine_parser = subparsers.add_parser(
+        "node-mine",
+        help="Mine pending transactions on an HTTP node",
+    )
+    node_mine_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_mine_parser.add_argument("miner", help="Wallet name receiving the reward")
+    node_mine_parser.add_argument(
+        "--max-tx",
+        type=int,
+        default=None,
+        help="Maximum number of transactions to include",
+    )
+    node_mine_parser.set_defaults(func=command_node_mine)
+
+    node_send_parser = subparsers.add_parser(
+        "node-send",
+        help="Send QCOIN through an HTTP node",
+    )
+    node_send_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_send_parser.add_argument("sender", help="Sender wallet name")
+    node_send_parser.add_argument("receiver", help="Receiver wallet name or raw address")
+    node_send_parser.add_argument("amount", type=int)
+    node_send_parser.add_argument(
+        "--fee",
+        type=int,
+        default=1,
+        help="Transaction fee",
+    )
+    node_send_parser.set_defaults(func=command_node_send)
 
     return parser
 
@@ -381,7 +652,16 @@ def main() -> None:
 
     try:
         args.func(args)
-    except ValueError as error:
+
+    except HttpJsonError as error:
+        print(f"HTTP error: {error.status_code}")
+
+        if error.body is not None:
+            print_json(error.body)
+        elif error.raw_body:
+            print(error.raw_body)
+
+    except (ValueError, urllib.error.URLError, TimeoutError) as error:
         print(f"Error: {error}")
 
 

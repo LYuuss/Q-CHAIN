@@ -1,8 +1,11 @@
 {
   "difficulty": 5,
+  "initial_difficulty": 5,
   "mining_reward": 50,
   "target_block_time": 10,
   "difficulty_adjustment_interval": 5,
+  "min_difficulty": 1,
+  "max_difficulty": 8,
   "chain": [
     {
       "header": {

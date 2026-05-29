@@ -1,0 +1,179 @@
+{
+  "difficulty": 3,
+  "initial_difficulty": 4,
+  "mining_reward": 50,
+  "target_block_time": 10,
+  "difficulty_adjustment_interval": 5,
+  "min_difficulty": 1,
+  "max_difficulty": 8,
+  "chain": [
+    {
+      "header": {
+        "index": 0,
+        "previous_hash": "0",
+        "merkle_root": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+        "difficulty": 4,
+        "timestamp": 0.0,
+        "nonce": 30991
+      },
+      "hash": "00003f261bb462c56d4177c824dc2c1e3d6645ed99b78390409dad49db2fadce",
+      "transactions": []
+    },
+    {
+      "header": {
+        "index": 1,
+        "previous_hash": "00003f261bb462c56d4177c824dc2c1e3d6645ed99b78390409dad49db2fadce",
+        "merkle_root": "22049c93097c20fbcbb2c51b1bbfcf836a294da73430f0743493cd5176268cec",
+        "difficulty": 4,
+        "timestamp": 1780010627.098967,
+        "nonce": 20116
+      },
+      "hash": "00005bb7ce86a5c746bb7807d9e52d3a7379d4212e78fb5585cddd7f9222d648",
+      "transactions": [
+        {
+          "amount": 50,
+          "fee": 0,
+          "nonce": 1,
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
+          "sender": "COINBASE",
+          "signature": null
+        }
+      ]
+    },
+    {
+      "header": {
+        "index": 2,
+        "previous_hash": "00005bb7ce86a5c746bb7807d9e52d3a7379d4212e78fb5585cddd7f9222d648",
+        "merkle_root": "798cf0782aee3f514fc2079787be281fa55ed00757de639aaaa8d469e5ffefc5",
+        "difficulty": 4,
+        "timestamp": 1780010630.155877,
+        "nonce": 58845
+      },
+      "hash": "0000a9fe75de6d2a77301148c3d8ae8d0ea63c61d73c47599d5cc67ec1a419c2",
+      "transactions": [
+        {
+          "amount": 50,
+          "fee": 0,
+          "nonce": 2,
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
+          "sender": "COINBASE",
+          "signature": null
+        }
+      ]
+    },
+    {
+      "header": {
+        "index": 3,
+        "previous_hash": "0000a9fe75de6d2a77301148c3d8ae8d0ea63c61d73c47599d5cc67ec1a419c2",
+        "merkle_root": "e4885beb32ec53738ac92b4f8994b391050f8939f68fca8757f5598afb1d526a",
+        "difficulty": 4,
+        "timestamp": 1780010704.427443,
+        "nonce": 56243
+      },
+      "hash": "00000f8d79e1dd41172508a77cf43b79a4f2a69eee4dde7d8e9503528c8c7954",
+      "transactions": [
+        {
+          "amount": 50,
+          "fee": 0,
+          "nonce": 3,
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
+          "sender": "COINBASE",
+          "signature": null
+        }
+      ]
+    },
+    {
+      "header": {
+        "index": 4,
+        "previous_hash": "00000f8d79e1dd41172508a77cf43b79a4f2a69eee4dde7d8e9503528c8c7954",
+        "merkle_root": "d9204cc86a1f59de195eb2b60a03865f8fb58301b209c26aeafb0e83b8b67760",
+        "difficulty": 4,
+        "timestamp": 1780010826.136359,
+        "nonce": 64280
+      },
+      "hash": "0000440490ba19644c62ef14ea59ac18389b7d6075b07ff6a145aa180cc23d1b",
+      "transactions": [
+        {
+          "amount": 50,
+          "fee": 0,
+          "nonce": 4,
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
+          "sender": "COINBASE",
+          "signature": null
+        }
+      ]
+    },
+    {
+      "header": {
+        "index": 5,
+        "previous_hash": "0000440490ba19644c62ef14ea59ac18389b7d6075b07ff6a145aa180cc23d1b",
+        "merkle_root": "61bfbe9c7db8b8277af5447819a3fc4e9e8a379802482eec730491e1ee91e680",
+        "difficulty": 4,
+        "timestamp": 1780011538.1964219,
+        "nonce": 173024
+      },
+      "hash": "000020dfc402b855eb5c550b364359c8a59790da9372e80a47d838e20646726a",
+      "transactions": [
+        {
+          "amount": 50,
+          "fee": 0,
+          "nonce": 5,
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
+          "sender": "COINBASE",
+          "signature": null
+        }
+      ]
+    },
+    {
+      "header": {
+        "index": 6,
+        "previous_hash": "000020dfc402b855eb5c550b364359c8a59790da9372e80a47d838e20646726a",
+        "merkle_root": "5f632913a082af3f0c8d0c8993ed4dfc1b5277e6f22a9f938780d6adce577bde",
+        "difficulty": 3,
+        "timestamp": 1780011567.3666382,
+        "nonce": 8186
+      },
+      "hash": "000208f335336fea2393fd59362b2e1dc248a8bad1625345f94e9fe313ffea58",
+      "transactions": [
+        {
+          "amount": 50,
+          "fee": 0,
+          "nonce": 6,
+          "receiver": "41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa",
+          "sender": "COINBASE",
+          "signature": null
+        }
+      ]
+    },
+    {
+      "header": {
+        "index": 7,
+        "previous_hash": "000208f335336fea2393fd59362b2e1dc248a8bad1625345f94e9fe313ffea58",
+        "merkle_root": "3bd0ddddae85f5b410f9b193e135406316b4534d9feca3689864794638ac6219",
+        "difficulty": 3,
+        "timestamp": 1780013390.807539,
+        "nonce": 4650
+      },
+      "hash": "00090967912b3a3559d3cd818cb6fd05ec44a87e1645f6a7fcba7d708db7b26e",
+      "transactions": [
+        {
+          "sender": "COINBASE",
+          "receiver": "10efef8e846429f93fdab087978fa6018deda59e",
+          "amount": 52,
+          "nonce": 7,
+          "fee": 0,
+          "signature": null
+        },
+        {
+          "sender": "65afd71e21917ca4f7806a4839cb688be837b5e6c1b10dc0f1f58a1338663ac1",
+          "receiver": "b36df18622f1e635d6c6374ff0f7ea058cc3bc1c",
+          "amount": 10,
+          "nonce": 1,
+          "fee": 2,
+          "signature": "19d9a1bcb796f8a0493f9d2beb3e06ac08ad46cd1b5be0c1b025bbdbe99a92eb05b25c8a767bd681c606761a985e070598c1a32fbf3f246b9c1f894edd8d4104"
+        }
+      ]
+    }
+  ],
+  "mempool": []
+}

@@ -58,6 +58,21 @@ class Transaction:
             separators=(",", ":"),
         ).encode()
 
+    def transaction_hash(self) -> str:
+        """
+        Unique transaction identifier.
+
+        The signature is included, so two transactions with the same payload
+        but different signatures would have different hashes.
+        """
+        return hashlib.sha3_256(
+            json.dumps(
+                self.to_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
     def sign(self, private_key_hex: str) -> None:
         if self.is_coinbase():
             raise ValueError("Coinbase transactions are not signed.")

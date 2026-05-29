@@ -9,7 +9,9 @@ from config import (
     DIFFICULTY_ADJUSTMENT_INTERVAL,
     MIN_DIFFICULTY,
     MAX_DIFFICULTY,
+    GENESIS_TIMESTAMP,
 )
+
 
 class Blockchain:
     def __init__(
@@ -45,7 +47,8 @@ class Blockchain:
             index=0,
             previous_hash="0",
             transactions=[],
-            difficulty=self.difficulty,
+            difficulty=self.initial_difficulty,
+            timestamp=GENESIS_TIMESTAMP,
         )
         genesis.mine()
         return genesis
@@ -70,9 +73,12 @@ class Blockchain:
 
         data = {
             "difficulty": self.difficulty,
+            "initial_difficulty": self.initial_difficulty,
             "mining_reward": self.mining_reward,
             "target_block_time": self.target_block_time,
             "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
+            "min_difficulty": self.min_difficulty,
+            "max_difficulty": self.max_difficulty,
             "chain": [block.to_dict() for block in self.chain],
             "mempool": [tx.to_dict() for tx in self.mempool],
         }
@@ -85,12 +91,13 @@ class Blockchain:
             data = json.load(file)
 
         self.difficulty = data.get("difficulty", self.difficulty)
-        self.mining_reward = data.get("mining_reward", self.mining_reward)
-        
+
         self.initial_difficulty = data.get(
             "initial_difficulty",
             data.get("difficulty", self.initial_difficulty),
         )
+
+        self.mining_reward = data.get("mining_reward", self.mining_reward)
 
         self.target_block_time = data.get(
             "target_block_time",
@@ -100,6 +107,16 @@ class Blockchain:
         self.difficulty_adjustment_interval = data.get(
             "difficulty_adjustment_interval",
             self.difficulty_adjustment_interval,
+        )
+
+        self.min_difficulty = data.get(
+            "min_difficulty",
+            self.min_difficulty,
+        )
+
+        self.max_difficulty = data.get(
+            "max_difficulty",
+            self.max_difficulty,
         )
 
         self.chain = [
@@ -121,21 +138,24 @@ class Blockchain:
             raise ValueError("Loaded blockchain is invalid.")
 
         self.clean_mempool()
-
         self.difficulty = self.calculate_next_difficulty()
-
         self.save_to_disk()
 
     def rebuild_state(self) -> None:
+        self.balances, self.nonces = self.compute_state_for_chain(self.chain)
+
+    def compute_state_for_chain(
+        self,
+        chain: list[Block],
+    ) -> tuple[dict[str, int], dict[str, int]]:
         balances: dict[str, int] = {}
         nonces: dict[str, int] = {}
 
-        for block in self.chain[1:]:
+        for block in chain[1:]:
             if not self._apply_block_transactions(block, balances, nonces):
-                raise ValueError("Cannot rebuild state: invalid block detected.")
+                raise ValueError("Cannot compute state: invalid chain.")
 
-        self.balances = balances
-        self.nonces = nonces
+        return balances, nonces
 
     def clean_mempool(self) -> None:
         valid_transactions: list[Transaction] = []
@@ -312,6 +332,62 @@ class Blockchain:
 
         return True
 
+    def add_external_block(self, block: Block) -> tuple[bool, str]:
+        """
+        Add a block received from another node.
+
+        This only accepts blocks that directly extend the current local chain.
+        If the block belongs to a fork or if we are missing previous blocks,
+        the node should run /sync instead.
+        """
+
+        if len(self.chain) == 0:
+            return False, "Local chain is empty."
+
+        if block.hash in {existing_block.hash for existing_block in self.chain}:
+            return False, "Block already known."
+
+        expected_index = len(self.chain)
+
+        if block.index < expected_index:
+            return False, "Received stale block."
+
+        if block.index > expected_index:
+            return False, "Missing previous blocks. Run sync."
+
+        if block.previous_hash != self.latest_block().hash:
+            return False, "Block does not extend current chain. Possible fork. Run sync."
+
+        expected_difficulty = self._calculate_expected_difficulty_for_index(
+            block_index=block.index,
+            chain=self.chain,
+        )
+
+        if block.difficulty != expected_difficulty:
+            return False, "Invalid difficulty for received block."
+
+        if block.hash != block.compute_hash():
+            return False, "Invalid block hash."
+
+        if not block.hash.startswith("0" * block.difficulty):
+            return False, "Invalid Proof of Work."
+
+        temp_balances = self.balances.copy()
+        temp_nonces = self.nonces.copy()
+
+        if not self._apply_block_transactions(block, temp_balances, temp_nonces):
+            return False, "Invalid block transactions."
+
+        self.chain.append(block)
+        self.balances = temp_balances
+        self.nonces = temp_nonces
+        self.difficulty = self.calculate_next_difficulty()
+
+        self.clean_mempool()
+        self.save_to_disk()
+
+        return True, "Block accepted."
+
     def _apply_block_transactions(
         self,
         block: Block,
@@ -425,71 +501,6 @@ class Blockchain:
 
         return True
 
-    def is_valid(self) -> bool:
-        if len(self.chain) == 0:
-            return False
-
-        genesis = self.chain[0]
-
-        if genesis.index != 0:
-            return False
-
-        if genesis.previous_hash != "0":
-            return False
-
-        if genesis.hash != genesis.compute_hash():
-            return False
-
-        if not genesis.hash.startswith("0" * genesis.difficulty):
-            return False
-
-        balances: dict[str, int] = {}
-        nonces: dict[str, int] = {}
-
-        for i in range(1, len(self.chain)):
-            current = self.chain[i]
-            previous = self.chain[i - 1]
-
-            expected_difficulty = self._calculate_expected_difficulty_for_index(
-                block_index=i,
-                chain=self.chain,
-            )
-
-            if current.difficulty != expected_difficulty:
-                return False
-
-            if current.index != i:
-                return False
-
-            if current.hash != current.compute_hash():
-                return False
-
-            if current.previous_hash != previous.hash:
-                return False
-
-            if not current.hash.startswith("0" * current.difficulty):
-                return False
-
-            if not self._apply_block_transactions(current, balances, nonces):
-                return False
-
-        return True
-
-    def print_mempool(self) -> None:
-        print(f"\nMempool: {len(self.mempool)} pending transaction(s)")
-
-        for index, tx in enumerate(self.mempool, start=1):
-            sender_address = tx.sender_address()
-            total_cost = tx.amount + tx.fee
-
-            print(
-                f"{index}. {sender_address} -> {tx.receiver} | "
-                f"amount={tx.amount} {COIN_NAME} | "
-                f"fee={tx.fee} {COIN_NAME} | "
-                f"total_cost={total_cost} {COIN_NAME} | "
-                f"nonce={tx.nonce}"
-            )
-
     def _clamp_difficulty(self, difficulty: int) -> int:
         return max(
             self.min_difficulty,
@@ -500,7 +511,7 @@ class Blockchain:
         self,
         block_index: int,
         chain: list[Block],
-        ) -> int:
+    ) -> int:
         if block_index == 0:
             return self.initial_difficulty
 
@@ -534,9 +545,126 @@ class Blockchain:
             return self._clamp_difficulty(previous_difficulty - 1)
 
         return previous_difficulty
-    
+
     def calculate_next_difficulty(self) -> int:
         return self._calculate_expected_difficulty_for_index(
             block_index=len(self.chain),
             chain=self.chain,
         )
+
+    def calculate_block_work(self, block: Block) -> int:
+        return 16 ** block.difficulty
+
+    def calculate_cumulative_work(self, chain: list[Block] | None = None) -> int:
+        if chain is None:
+            chain = self.chain
+
+        total_work = 0
+
+        for block in chain:
+            total_work += self.calculate_block_work(block)
+
+        return total_work
+
+    def is_valid_chain(self, chain: list[Block]) -> bool:
+        if len(chain) == 0:
+            return False
+
+        genesis = chain[0]
+
+        if genesis.index != 0:
+            return False
+
+        if genesis.previous_hash != "0":
+            return False
+
+        if genesis.hash != genesis.compute_hash():
+            return False
+
+        if not genesis.hash.startswith("0" * genesis.difficulty):
+            return False
+
+        balances: dict[str, int] = {}
+        nonces: dict[str, int] = {}
+
+        for i in range(1, len(chain)):
+            current = chain[i]
+            previous = chain[i - 1]
+
+            expected_difficulty = self._calculate_expected_difficulty_for_index(
+                block_index=i,
+                chain=chain,
+            )
+
+            if current.difficulty != expected_difficulty:
+                return False
+
+            if current.index != i:
+                return False
+
+            if current.hash != current.compute_hash():
+                return False
+
+            if current.previous_hash != previous.hash:
+                return False
+
+            if not current.hash.startswith("0" * current.difficulty):
+                return False
+
+            if not self._apply_block_transactions(current, balances, nonces):
+                return False
+
+        return True
+
+    def is_valid(self) -> bool:
+        return self.is_valid_chain(self.chain)
+
+    def replace_chain_if_better(self, candidate_chain: list[Block]) -> bool:
+        if len(candidate_chain) == 0:
+            print("Candidate chain rejected: empty chain.")
+            return False
+
+        if candidate_chain[0].hash != self.chain[0].hash:
+            print("Candidate chain rejected: different genesis block.")
+            return False
+
+        if not self.is_valid_chain(candidate_chain):
+            print("Candidate chain rejected: invalid chain.")
+            return False
+
+        current_work = self.calculate_cumulative_work(self.chain)
+        candidate_work = self.calculate_cumulative_work(candidate_chain)
+
+        if candidate_work <= current_work:
+            print("Candidate chain rejected: not enough cumulative work.")
+            print(f"Current work: {current_work}")
+            print(f"Candidate work: {candidate_work}")
+            return False
+
+        print("Candidate chain accepted: higher cumulative work.")
+        print(f"Current work: {current_work}")
+        print(f"Candidate work: {candidate_work}")
+
+        self.chain = candidate_chain
+        self.balances, self.nonces = self.compute_state_for_chain(candidate_chain)
+        self.difficulty = self.calculate_next_difficulty()
+
+        self.clean_mempool()
+        self.save_to_disk()
+
+        return True
+
+    def print_mempool(self) -> None:
+        print(f"\nMempool: {len(self.mempool)} pending transaction(s)")
+
+        for index, tx in enumerate(self.mempool, start=1):
+            sender_address = tx.sender_address()
+            total_cost = tx.amount + tx.fee
+
+            print(
+                f"{index}. {sender_address} -> {tx.receiver} | "
+                f"amount={tx.amount} {COIN_NAME} | "
+                f"fee={tx.fee} {COIN_NAME} | "
+                f"total_cost={total_cost} {COIN_NAME} | "
+                f"nonce={tx.nonce}"
+            )
