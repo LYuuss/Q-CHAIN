@@ -127,7 +127,7 @@ def should_trigger_sync(message: str) -> bool:
     )
 
 
-def create_app(data_dir: Path) -> Flask:
+def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     chain_path = data_dir / "chain.json"
@@ -144,6 +144,12 @@ def create_app(data_dir: Path) -> Flask:
 
     app = Flask(__name__)
 
+    def get_local_node_url() -> str:
+        if advertised_url is not None:
+            return advertised_url
+
+        return request.host_url.rstrip("/")
+
     def chain_summary() -> dict[str, Any]:
         return {
             "project": PROJECT_NAME,
@@ -159,11 +165,9 @@ def create_app(data_dir: Path) -> Flask:
             "mempool_size": len(chain.mempool),
             "valid": chain.is_valid(),
             "peers": sorted(peers),
+            "advertised_url": get_local_node_url(),
             "storage_path": str(chain_path),
         }
-
-    def get_local_node_url() -> str:
-        return request.host_url.rstrip("/")
 
     def transaction_is_known(transaction: Transaction) -> bool:
         tx_hash = transaction.transaction_hash()
@@ -396,6 +400,7 @@ def create_app(data_dir: Path) -> Flask:
                 "mempool_endpoint": "/mempool",
                 "blocks_endpoint": "/blocks",
                 "transactions_endpoint": "/transactions",
+                "advertised_url": get_local_node_url(),
             }
         )
 
@@ -544,7 +549,7 @@ def create_app(data_dir: Path) -> Flask:
                     "cumulative_work": chain.calculate_cumulative_work(),
                 }
             ), 200
-        
+
         broadcast_results = []
         sync_result = None
 
@@ -557,6 +562,7 @@ def create_app(data_dir: Path) -> Flask:
             return jsonify(
                 {
                     "accepted": True,
+                    "already_known": False,
                     "message": message,
                     "sync_triggered": False,
                     "height": len(chain.chain) - 1,
@@ -647,6 +653,7 @@ def create_app(data_dir: Path) -> Flask:
             {
                 "peers": sorted(peers),
                 "count": len(peers),
+                "advertised_url": get_local_node_url(),
             }
         )
 
@@ -664,6 +671,17 @@ def create_app(data_dir: Path) -> Flask:
 
         peer_url = normalize_peer_url(url)
 
+        if peer_url == get_local_node_url():
+            return jsonify(
+                {
+                    "added": False,
+                    "message": "Refusing to add self as peer.",
+                    "peer": peer_url,
+                    "peers": sorted(peers),
+                    "advertised_url": get_local_node_url(),
+                }
+            ), 200
+
         peers.add(peer_url)
         save_peers(peers_path, peers)
 
@@ -672,6 +690,7 @@ def create_app(data_dir: Path) -> Flask:
                 "added": True,
                 "peer": peer_url,
                 "peers": sorted(peers),
+                "advertised_url": get_local_node_url(),
             }
         ), 201
 
@@ -706,6 +725,12 @@ def parse_args() -> argparse.Namespace:
         help="Node data directory. Default: data/nodes/node_<port>",
     )
 
+    parser.add_argument(
+        "--advertised-url",
+        default=None,
+        help="URL this node announces to peers, example: http://node1:5000",
+    )
+
     return parser.parse_args()
 
 
@@ -717,12 +742,21 @@ def main() -> None:
     else:
         data_dir = Path(args.data_dir)
 
-    app = create_app(data_dir)
+    advertised_url = None
+
+    if args.advertised_url is not None:
+        advertised_url = normalize_peer_url(args.advertised_url)
+
+    app = create_app(
+        data_dir=data_dir,
+        advertised_url=advertised_url,
+    )
 
     print(f"{PROJECT_NAME} node")
     print("-" * (len(PROJECT_NAME) + 5))
     print(f"Host: {args.host}")
     print(f"Port: {args.port}")
+    print(f"Advertised URL: {advertised_url}")
     print(f"Data directory: {data_dir}")
     print(f"Status: http://{args.host}:{args.port}/status")
 

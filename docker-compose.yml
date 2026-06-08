@@ -2,7 +2,7 @@ services:
   node1:
     build: .
     container_name: qchain-node1
-    command: python3 src/node.py --host 0.0.0.0 --port 5000
+    command: python3 src/node.py --host 0.0.0.0 --port 5000 --advertised-url http://node1:5000
     ports:
       - "5001:5000"
     volumes:
@@ -11,7 +11,7 @@ services:
   node2:
     build: .
     container_name: qchain-node2
-    command: python3 src/node.py --host 0.0.0.0 --port 5000
+    command: python3 src/node.py --host 0.0.0.0 --port 5000 --advertised-url http://node2:5000
     ports:
       - "5002:5000"
     volumes:
@@ -20,7 +20,7 @@ services:
   node3:
     build: .
     container_name: qchain-node3
-    command: python3 src/node.py --host 0.0.0.0 --port 5000
+    command: python3 src/node.py --host 0.0.0.0 --port 5000 --advertised-url http://node3:5000
     ports:
       - "5003:5000"
     volumes:
