@@ -532,6 +532,19 @@ def create_app(data_dir: Path) -> Flask:
 
         accepted, message = chain.add_external_block(block)
 
+        if message == "Block already known.":
+            return jsonify(
+                {
+                    "accepted": True,
+                    "already_known": True,
+                    "message": message,
+                    "sync_triggered": False,
+                    "height": len(chain.chain) - 1,
+                    "latest_hash": chain.latest_block().hash,
+                    "cumulative_work": chain.calculate_cumulative_work(),
+                }
+            ), 200
+        
         broadcast_results = []
         sync_result = None
 

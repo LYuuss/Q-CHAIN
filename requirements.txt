@@ -1,3 +1,2 @@
-Python
-    - cryptography
-    - flask
+cryptography
+flask

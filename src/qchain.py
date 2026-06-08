@@ -501,8 +501,24 @@ def command_node_send(args) -> None:
     print()
     print_json(response)
 
+def command_node_balance(args) -> None:
+    node_url = normalize_node_url(args.node)
+    metadata = load_wallet_metadata(args.wallet)
+
+    address = metadata["address"]
+
+    response = fetch_json(f"{node_url}/balances/{address}")
+
+    print(f"Node: {node_url}")
+    print(f"Wallet: {args.wallet}")
+    print(f"Address: {address}")
+    print(f"Balance: {response['balance']} {response['coin']}")
+    print(f"Confirmed nonce: {response['confirmed_nonce']}")
+
 
 def build_parser() -> argparse.ArgumentParser:
+
+    
     parser = argparse.ArgumentParser(
         description=f"{PROJECT_NAME} command line interface"
     )
@@ -642,6 +658,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Transaction fee",
     )
     node_send_parser.set_defaults(func=command_node_send)
+
+    node_balance_parser = subparsers.add_parser(
+        "node-balance",
+        help="Show wallet balance on an HTTP node",
+    )
+    node_balance_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_balance_parser.add_argument("wallet", help="Wallet name")
+    node_balance_parser.set_defaults(func=command_node_balance)
 
     return parser
 
