@@ -18,6 +18,7 @@ from config import (
 )
 from transaction import Transaction
 
+MAX_ORPHAN_BLOCKS = 100
 
 class HttpJsonError(Exception):
     def __init__(self, status_code: int, body: dict[str, Any] | None, raw_body: str):
@@ -142,6 +143,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     peers = load_peers(peers_path)
 
+    orphan_blocks: dict[str, Block] = {}
+
     app = Flask(__name__)
 
     def get_local_node_url() -> str:
@@ -163,6 +166,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "difficulty_adjustment_interval": chain.difficulty_adjustment_interval,
             "mining_reward": chain.mining_reward,
             "mempool_size": len(chain.mempool),
+            "orphan_pool_size": len(orphan_blocks),
+            "max_orphan_blocks": MAX_ORPHAN_BLOCKS,
             "valid": chain.is_valid(),
             "peers": sorted(peers),
             "advertised_url": get_local_node_url(),
@@ -281,6 +286,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     }
                 )
 
+        orphan_result = process_orphans()
+
         return {
             "adopted_new_chain": adopted,
             "height": len(chain.chain) - 1,
@@ -288,6 +295,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "cumulative_work": chain.calculate_cumulative_work(),
             "checked_peers": checked_peers,
             "peer_statuses": peer_statuses,
+            "orphan_result": orphan_result,
             "errors": errors,
         }
 
@@ -511,7 +519,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "broadcast_results": broadcast_results,
             }
         ), 201
-
+    
     @app.post("/blocks")
     def receive_block():
         payload = request.get_json(silent=True)
@@ -544,16 +552,17 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "already_known": True,
                     "message": message,
                     "sync_triggered": False,
+                    "orphan_stored": False,
                     "height": len(chain.chain) - 1,
                     "latest_hash": chain.latest_block().hash,
                     "cumulative_work": chain.calculate_cumulative_work(),
+                    "orphan_pool_size": len(orphan_blocks),
                 }
             ), 200
 
-        broadcast_results = []
-        sync_result = None
-
         if accepted:
+            orphan_result = process_orphans()
+
             broadcast_results = broadcast_block(
                 block=block,
                 exclude_peer=source_url,
@@ -565,15 +574,45 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "already_known": False,
                     "message": message,
                     "sync_triggered": False,
+                    "orphan_stored": False,
                     "height": len(chain.chain) - 1,
                     "latest_hash": chain.latest_block().hash,
                     "cumulative_work": chain.calculate_cumulative_work(),
+                    "orphan_pool_size": len(orphan_blocks),
+                    "orphan_result": orphan_result,
                     "broadcast_results": broadcast_results,
                 }
             ), 201
+        
+        if should_store_as_orphan(block, message):
+            stored, orphan_message = add_orphan_block(block)
+
+            sync_result = None
+
+            if should_trigger_sync(message):
+                sync_result = sync_with_peers()
+
+            orphan_result = process_orphans()
+
+            return jsonify(
+                {
+                    "accepted": False,
+                    "message": message,
+                    "sync_triggered": sync_result is not None,
+                    "sync_result": sync_result,
+                    "orphan_stored": stored,
+                    "orphan_message": orphan_message,
+                    "orphan_result": orphan_result,
+                    "orphan_pool_size": len(orphan_blocks),
+                    "height": len(chain.chain) - 1,
+                    "latest_hash": chain.latest_block().hash,
+                    "cumulative_work": chain.calculate_cumulative_work(),
+                }
+            ), 202
 
         if should_trigger_sync(message):
             sync_result = sync_with_peers()
+            orphan_result = process_orphans()
 
             status_code = 202 if sync_result["adopted_new_chain"] else 409
 
@@ -583,9 +622,12 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "message": message,
                     "sync_triggered": True,
                     "sync_result": sync_result,
+                    "orphan_stored": False,
+                    "orphan_result": orphan_result,
                     "height": len(chain.chain) - 1,
                     "latest_hash": chain.latest_block().hash,
                     "cumulative_work": chain.calculate_cumulative_work(),
+                    "orphan_pool_size": len(orphan_blocks),
                 }
             ), status_code
 
@@ -594,9 +636,11 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "accepted": False,
                 "message": message,
                 "sync_triggered": False,
+                "orphan_stored": False,
                 "height": len(chain.chain) - 1,
                 "latest_hash": chain.latest_block().hash,
                 "cumulative_work": chain.calculate_cumulative_work(),
+                "orphan_pool_size": len(orphan_blocks),
             }
         ), 409
 
@@ -633,6 +677,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             exclude_peer=None,
         )
 
+        orphan_result = process_orphans()
+        
         return jsonify(
             {
                 "mined": True,
@@ -644,6 +690,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "miner_balance": chain.get_balance(miner_address),
                 "coin": COIN_NAME,
                 "broadcast_results": broadcast_results,
+                "orphan_result": orphan_result,
+                "orphan_pool_size": len(orphan_blocks),                
             }
         )
 
@@ -698,6 +746,143 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     def sync():
         return jsonify(sync_with_peers())
 
+    def known_block_hashes() -> set[str]:
+        return {block.hash for block in chain.chain}
+
+    def block_is_known(block_hash: str) -> bool:
+        if block_hash in orphan_blocks:
+            return True
+
+        return block_hash in known_block_hashes()
+
+    def block_has_basic_validity(block: Block) -> bool:
+        if block.hash != block.compute_hash():
+            return False
+
+        if not block.verify_merkle_root():
+            return False
+
+        if not block.hash.startswith("0" * block.difficulty):
+            return False
+
+        return True
+
+    def can_remain_orphan(block: Block, message: str) -> bool:
+        if not block_has_basic_validity(block):
+            return False
+
+        known_hashes = known_block_hashes()
+
+        if block.previous_hash not in known_hashes and block.index > 0:
+            return True
+
+        lower_message = message.lower()
+
+        return (
+            "missing previous blocks" in lower_message
+            or "parent" in lower_message
+        )
+    
+    def should_store_as_orphan(block: Block, message: str) -> bool:
+        if block_is_known(block.hash):
+            return False
+
+        return can_remain_orphan(block, message)
+
+    def add_orphan_block(block: Block) -> tuple[bool, str]:
+        if block_is_known(block.hash):
+            return False, "Block already known or already stored as orphan."
+
+        if len(orphan_blocks) >= MAX_ORPHAN_BLOCKS:
+            oldest_hash = next(iter(orphan_blocks))
+            del orphan_blocks[oldest_hash]
+
+        orphan_blocks[block.hash] = block
+        return True, "Orphan block stored."
+
+    def orphan_summary(block: Block) -> dict[str, Any]:
+        return {
+            "index": block.index,
+            "hash": block.hash,
+            "previous_hash": block.previous_hash,
+            "difficulty": block.difficulty,
+            "transaction_count": len(block.transactions),
+        }
+
+    def process_orphans() -> dict[str, Any]:
+        attached_blocks = []
+        removed_blocks = []
+        progress = True
+
+        while progress:
+            progress = False
+
+            for orphan_hash, orphan_block in list(orphan_blocks.items()):
+                accepted, message = chain.add_external_block(orphan_block)
+
+                if accepted:
+                    del orphan_blocks[orphan_hash]
+                    progress = True
+
+                    broadcast_results = broadcast_block(
+                        block=orphan_block,
+                        exclude_peer=None,
+                    )
+
+                    attached_blocks.append(
+                        {
+                            "hash": orphan_block.hash,
+                            "index": orphan_block.index,
+                            "message": message,
+                            "broadcast_results": broadcast_results,
+                        }
+                    )
+
+                elif message == "Block already known.":
+                    del orphan_blocks[orphan_hash]
+                    progress = True
+
+                    removed_blocks.append(
+                        {
+                            "hash": orphan_block.hash,
+                            "index": orphan_block.index,
+                            "reason": message,
+                        }
+                    )
+
+                elif not can_remain_orphan(orphan_block, message):
+                    del orphan_blocks[orphan_hash]
+                    progress = True
+
+                    removed_blocks.append(
+                        {
+                            "hash": orphan_block.hash,
+                            "index": orphan_block.index,
+                            "reason": message,
+                        }
+                    )
+
+        return {
+            "attached_count": len(attached_blocks),
+            "removed_count": len(removed_blocks),
+            "remaining_count": len(orphan_blocks),
+            "attached_blocks": attached_blocks,
+            "removed_blocks": removed_blocks,
+        }
+    
+    @app.get("/orphans")
+    def get_orphans():
+        return jsonify(
+            {
+                "size": len(orphan_blocks),
+                "max_size": MAX_ORPHAN_BLOCKS,
+                "blocks": [
+                    orphan_summary(block)
+                    for block in orphan_blocks.values()
+                ],
+            }
+        )
+    
     return app
 
 

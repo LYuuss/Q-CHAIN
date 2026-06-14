@@ -1,5 +1,7 @@
 # QChain
 
+![QChain Tests](https://github.com/LYuuss/Q-CHAIN/actions/workflows/tests.yml/badge.svg)
+
 QChain is an experimental Proof-of-Work blockchain built from scratch in Python.
 
 The project is designed as an educational and research-oriented blockchain prototype. Its long-term goal is to explore how a blockchain can evolve toward post-quantum cryptography, quantum-resistant signatures, and STARK-based privacy mechanisms.

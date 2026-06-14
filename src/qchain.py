@@ -408,6 +408,10 @@ def command_node_mempool(args) -> None:
     response = fetch_json(f"{node_url}/mempool")
     print_json(response)
 
+def command_node_orphans(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/orphans")
+    print_json(response)
 
 def command_node_sync(args) -> None:
     node_url = normalize_node_url(args.node)
@@ -615,6 +619,13 @@ def build_parser() -> argparse.ArgumentParser:
     node_mempool_parser.add_argument("node", help="Node port or URL, example: 5001")
     node_mempool_parser.set_defaults(func=command_node_mempool)
 
+    node_orphans_parser = subparsers.add_parser(
+        "node-orphans",
+        help="Show HTTP node orphan block pool",
+    )
+    node_orphans_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_orphans_parser.set_defaults(func=command_node_orphans)
+    
     node_sync_parser = subparsers.add_parser(
         "node-sync",
         help="Synchronize an HTTP node with its peers",
