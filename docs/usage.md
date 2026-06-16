@@ -27,22 +27,21 @@ When using the Docker testnet, prefer the `node-*` commands.
 
 ## 1. Requirements
 
-Install dependencies:
+Install runtime dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Current requirements:
+Install test dependencies:
 
-```text
-cryptography
-flask
+```bash
+pip install -r requirements-dev.txt
 ```
 
 ---
 
-## 2. Create Wallets
+## 2. Wallets
 
 Create wallets:
 
@@ -52,29 +51,19 @@ python3 src/qchain.py wallet-create bob
 python3 src/qchain.py wallet-create miner
 ```
 
-Each wallet is stored in:
-
-```text
-data/wallets/
-```
-
-Wallet private keys are encrypted locally. The password is required to sign transactions.
-
----
-
-## 3. List Wallets
+List wallets:
 
 ```bash
 python3 src/qchain.py wallets
 ```
 
-Example output:
+Wallets are stored in:
 
 ```text
-alice: 41e34b96bb3907870ff91f55b3f7f5b2ee44d1aa | encrypted
-bob: b36df18622f1e635d6c6374ff0f7ea058cc3bc1c | encrypted
-miner: 10efef8e846429f93fdab087978fa6018deda59e | encrypted
+data/wallets/
 ```
+
+Private keys are encrypted locally. The password is required to sign transactions.
 
 ---
 
@@ -90,68 +79,39 @@ data/chain.json
 
 It does not interact with Docker nodes.
 
----
-
-## 4. Local Status
+## Local Status
 
 ```bash
 python3 src/qchain.py status
 ```
 
-Shows:
-
-```text
-height
-latest hash
-next difficulty
-cumulative work
-mempool size
-chain validity
-```
-
----
-
-## 5. Local Mining
+## Local Mining
 
 ```bash
 python3 src/qchain.py mine alice
 ```
 
-This mines on the local chain and rewards Alice.
-
----
-
-## 6. Local Balance
+## Local Balance
 
 ```bash
 python3 src/qchain.py balance alice
 ```
 
-Important: this checks the local CLI chain only.
+Important: this checks the local CLI chain only. It does not check Docker node balances.
 
-It does not check Docker node balances.
-
----
-
-## 7. Local Send
+## Local Send
 
 ```bash
 python3 src/qchain.py send alice bob 10 --fee 2
 ```
 
-This creates a signed transaction and adds it to the local mempool.
-
----
-
-## 8. Local Mempool
+## Local Mempool
 
 ```bash
 python3 src/qchain.py mempool
 ```
 
----
-
-## 9. Validate Local Chain
+## Validate Local Chain
 
 ```bash
 python3 src/qchain.py validate
@@ -165,35 +125,70 @@ HTTP node mode communicates with running QChain nodes.
 
 This is the recommended mode for the Docker testnet.
 
----
-
-## 10. Node Status
+## Node Status
 
 ```bash
 python3 src/qchain.py node-status 5001
 ```
 
-Equivalent URL:
+The status includes:
 
 ```text
-http://127.0.0.1:5001/status
+height
+latest_hash
+genesis_hash
+cumulative_work
+mempool_size
+orphan_pool_size
+next_block_difficulty
+peers
+advertised_url
+valid
 ```
 
-You can also use a full URL:
+## Node Headers
 
 ```bash
-python3 src/qchain.py node-status http://127.0.0.1:5001
+python3 src/qchain.py node-headers 5001
 ```
 
----
+This displays compact block headers from a node.
 
-## 11. Node Balance
+Equivalent endpoint:
+
+```text
+GET /headers
+```
+
+## Node Orphans
+
+```bash
+python3 src/qchain.py node-orphans 5001
+```
+
+This displays the orphan block pool of a node.
+
+Equivalent endpoint:
+
+```text
+GET /orphans
+```
+
+Expected normal result:
+
+```json
+{
+  "blocks": [],
+  "max_size": 100,
+  "size": 0
+}
+```
+
+## Node Balance
 
 ```bash
 python3 src/qchain.py node-balance 5001 bob
 ```
-
-This checks Bob's balance on node `5001`.
 
 To compare all nodes:
 
@@ -203,17 +198,11 @@ python3 src/qchain.py node-balance 5002 bob
 python3 src/qchain.py node-balance 5003 bob
 ```
 
-This is useful to verify that all nodes have the same state.
-
----
-
-## 12. Node Mining
+## Node Mining
 
 ```bash
 python3 src/qchain.py node-mine 5001 alice
 ```
-
-This asks node `5001` to mine a block and pay the block reward to Alice.
 
 With a maximum number of transactions:
 
@@ -221,9 +210,7 @@ With a maximum number of transactions:
 python3 src/qchain.py node-mine 5001 miner --max-tx 5
 ```
 
----
-
-## 13. Node Send
+## Node Send
 
 ```bash
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
@@ -241,47 +228,49 @@ node 5001 adds it to its mempool
 node 5001 broadcasts it to peers
 ```
 
----
-
-## 14. Node Mempool
+## Node Mempool
 
 ```bash
 python3 src/qchain.py node-mempool 5001
 ```
 
-To check all three Docker nodes:
-
-```bash
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-mempool 5002
-python3 src/qchain.py node-mempool 5003
-```
-
----
-
-## 15. Node Sync
+## Node Sync
 
 ```bash
 python3 src/qchain.py node-sync 5001
 ```
 
-This asks node `5001` to synchronize with its peers.
+The node:
 
-The node compares cumulative work and adopts the heaviest valid chain if needed.
+```text
+checks peer status
+compares cumulative work
+downloads headers
+validates headers
+finds the latest common ancestor
+downloads only missing blocks
+validates the reconstructed candidate chain
+adopts the chain if it is heavier
+processes orphan blocks
+```
 
----
+If the node is already up to date, the response should include:
 
-## 16. Node Connect
+```json
+{
+  "downloaded_block_count": 0
+}
+```
 
-For non-Docker local nodes, you can connect two nodes with:
+## Node Connect
+
+For non-Docker local nodes, connect two nodes with:
 
 ```bash
 python3 src/qchain.py node-connect 5001 5002
 ```
 
-This connects the nodes in both directions.
-
-For Docker nodes, use the Docker-specific script instead because containers must use internal service names such as `http://node1:5000`.
+For Docker nodes, use the Docker-specific script because containers must use internal service names such as `http://node1:5000`.
 
 ---
 
@@ -337,64 +326,22 @@ Miner receives: 50 QCOIN reward + 2 QCOIN fee
 
 ---
 
-# Useful Notes
+# Tests
 
-## Local balance vs node balance
-
-This command:
+Run the full test suite:
 
 ```bash
-python3 src/qchain.py balance bob
+python3 -m pytest
 ```
 
-checks the local CLI chain.
-
-This command:
+or:
 
 ```bash
-python3 src/qchain.py node-balance 5001 bob
+bash scripts/run_tests.sh
 ```
 
-checks the Docker or HTTP node chain.
+Expected current result:
 
-Do not confuse them when testing the Docker testnet.
-
----
-
-## Restarting Docker
-
-If the Docker testnet is already built:
-
-```bash
-docker compose up -d
-```
-
-If source code used by Docker changed:
-
-```bash
-docker compose up -d --build
-```
-
-If only `src/qchain.py` changed, Docker does not need to be rebuilt because the CLI runs locally on your machine.
-
----
-
-## Stop Docker
-
-```bash
-docker compose down
-```
-
----
-
-## View Logs
-
-```bash
-docker compose logs -f
-```
-
-For one node:
-
-```bash
-docker compose logs -f node1
+```text
+23 passed
 ```

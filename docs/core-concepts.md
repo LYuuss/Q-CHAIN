@@ -2,7 +2,7 @@
 
 QChain is an experimental Proof-of-Work blockchain built from scratch in Python.
 
-This document explains the main concepts implemented in the project: blocks, Proof of Work, Merkle roots, wallets, signed transactions, mempool, forks, dynamic difficulty adjustment, node synchronization, and the heaviest-chain rule.
+This document explains the main concepts implemented in the project: blocks, Proof of Work, Merkle roots, wallets, signed transactions, mempool, transaction fees, forks, orphan blocks, dynamic difficulty adjustment, node synchronization, header-first sync, and the heaviest-chain rule.
 
 QChain is an educational prototype. It is not production-ready and must not be used with real funds.
 
@@ -27,9 +27,7 @@ Block
 └── transactions
 ```
 
-The block hash is computed from the block header.
-
-The transactions are represented inside the header through the Merkle root. If a transaction is modified, the Merkle root changes, the block hash changes, and the chain becomes invalid unless Proof of Work is recomputed.
+The block hash is computed from the block header. Transactions are summarized by the Merkle root. If a transaction is modified, the Merkle root changes, the block hash changes, and the chain becomes invalid unless Proof of Work is recomputed.
 
 ---
 
@@ -37,7 +35,7 @@ The transactions are represented inside the header through the Merkle root. If a
 
 The genesis block is the first block of the chain.
 
-In QChain, the genesis block is deterministic. This is important because multiple nodes must share the exact same genesis hash. If two nodes have different genesis blocks, they cannot safely synchronize with each other.
+In QChain, the genesis block is deterministic. This matters because multiple nodes must share the same genesis hash. If two nodes have different genesis blocks, they cannot safely synchronize with each other.
 
 ---
 
@@ -54,7 +52,7 @@ difficulty = 4
 valid hash = 0000a93f...
 ```
 
-Mining is a loop:
+Mining loop:
 
 ```text
 compute block hash
@@ -81,15 +79,34 @@ minimum difficulty = 1
 maximum difficulty = 8
 ```
 
-If blocks are mined too quickly, the difficulty increases.
-
-If blocks are mined too slowly, the difficulty decreases.
-
-This is a simplified educational version of the difficulty adjustment logic used in real Proof-of-Work blockchains.
+If blocks are mined too quickly, the difficulty increases. If blocks are mined too slowly, it decreases.
 
 ---
 
-## 5. Merkle Root
+## 5. Block Headers
+
+A block header is the compact summary of a block.
+
+In QChain, a header contains:
+
+```text
+index
+previous_hash
+merkle_root
+difficulty
+timestamp
+nonce
+hash
+transaction_count
+```
+
+Headers are used by the header-first sync mechanism.
+
+Instead of downloading full blocks immediately, a node can first download headers, validate them, find a common ancestor, and only then download missing full blocks.
+
+---
+
+## 6. Merkle Root
 
 A Merkle root summarizes all transactions in a block.
 
@@ -103,13 +120,11 @@ transactions
 -> Merkle root
 ```
 
-The Merkle root is stored in the block header.
-
-This allows QChain to detect any transaction tampering. If a transaction changes, its hash changes, the Merkle root changes, and the block becomes invalid.
+The Merkle root is stored in the block header. If a transaction changes, its hash changes, the Merkle root changes, and the block becomes invalid.
 
 ---
 
-## 6. Transactions
+## 7. Transactions
 
 A QChain transaction contains:
 
@@ -144,7 +159,6 @@ Example:
 
 ```text
 Alice sends 10 QCOIN to Bob with a 2 QCOIN fee.
-
 Alice pays: 12 QCOIN
 Bob receives: 10 QCOIN
 Miner receives: 2 QCOIN fee, plus the block reward
@@ -152,7 +166,7 @@ Miner receives: 2 QCOIN fee, plus the block reward
 
 ---
 
-## 7. Coinbase Transactions
+## 8. Coinbase Transactions
 
 A coinbase transaction is created by the protocol when a miner mines a block.
 
@@ -164,7 +178,7 @@ receiver = miner address
 amount = block reward + total fees
 ```
 
-Coinbase transactions are not signed because they are not created by a wallet. They are protocol-generated rewards.
+Coinbase transactions are not signed because they are protocol-generated rewards.
 
 The current default mining reward is:
 
@@ -174,7 +188,7 @@ The current default mining reward is:
 
 ---
 
-## 8. Wallets
+## 9. Wallets
 
 A QChain wallet contains:
 
@@ -192,19 +206,15 @@ Wallet files are stored in:
 data/wallets/
 ```
 
-Private keys are encrypted locally using a password-based key derivation function and symmetric encryption.
-
-The password is not stored. If the password is lost, the wallet cannot be unlocked.
+Private keys are encrypted locally using password-based key derivation and symmetric encryption. The password is not stored. If the password is lost, the wallet cannot be unlocked.
 
 ---
 
-## 9. Signatures
+## 10. Signatures
 
 Transactions are signed by the sender wallet.
 
-Current implementation uses Ed25519 through the `cryptography` Python package.
-
-This is a classical signature scheme used as a placeholder while the project evolves toward post-quantum signatures.
+The current implementation uses Ed25519 through the `cryptography` Python package. This is a classical signature scheme used as a placeholder while the project evolves toward post-quantum signatures.
 
 Long-term direction:
 
@@ -216,11 +226,9 @@ Ed25519 placeholder
 
 ---
 
-## 10. Nonces and Replay Protection
+## 11. Nonces and Replay Protection
 
-Each sender has a nonce.
-
-The nonce prevents replay attacks and enforces transaction order.
+Each sender has a nonce. The nonce prevents replay attacks and enforces transaction order.
 
 Example:
 
@@ -229,13 +237,11 @@ Alice confirmed nonce = 0
 Alice next transaction nonce = 1
 ```
 
-If Alice tries to send two conflicting transactions with the same nonce, QChain rejects the invalid one.
-
-The mempool also considers pending transactions when computing the next available nonce.
+If Alice tries to send two conflicting transactions with the same nonce, QChain rejects the invalid one. The mempool also considers pending transactions when computing the next available nonce.
 
 ---
 
-## 11. Mempool
+## 12. Mempool
 
 The mempool stores valid pending transactions before they are mined.
 
@@ -253,7 +259,7 @@ When a block is mined, included transactions are removed from the mempool.
 
 ---
 
-## 12. Transaction Fees
+## 13. Transaction Fees
 
 Each transaction can include a fee.
 
@@ -267,11 +273,9 @@ QChain includes fee-aware transaction selection. Higher-fee transactions can be 
 
 ---
 
-## 13. Multiple Nodes
+## 14. Multiple Nodes
 
-QChain supports local HTTP nodes.
-
-Each node has its own local chain, mempool, and peer list.
+QChain supports local HTTP nodes. Each node has its own local chain, mempool, orphan pool, and peer list.
 
 Example Docker testnet:
 
@@ -291,37 +295,59 @@ http://node3:5000
 
 ---
 
-## 14. Block Broadcasting
+## 15. Block Broadcasting
 
 When a node mines a block, it broadcasts the block to its peers.
 
-Peers validate the block before accepting it.
-
-A peer accepts a block only if:
-
-```text
-the block hash is valid
-the Proof of Work is valid
-the previous_hash matches the local latest block
-the Merkle root is valid
-the transactions are valid
-```
-
-If the block is already known, the peer returns a neutral success response.
+Peers validate the block before accepting it. If the block is already known, the peer returns a neutral success response.
 
 ---
 
-## 15. Transaction Broadcasting
+## 16. Transaction Broadcasting
 
 When a node accepts a transaction into its mempool, it broadcasts the transaction to its peers.
 
-Peers ignore already known transactions.
-
-This allows pending transactions to propagate through the local testnet before being mined.
+Peers ignore already known transactions. This allows pending transactions to propagate through the local testnet before being mined.
 
 ---
 
-## 16. Forks
+## 17. Orphan Blocks
+
+An orphan block is a block whose parent is missing locally.
+
+Example:
+
+```text
+local node knows:
+0 -> 1
+
+node receives:
+block 3
+
+but block 2 is missing
+```
+
+Instead of discarding block 3 forever, QChain stores it temporarily in an orphan block pool.
+
+The orphan pool is in memory and has a maximum size:
+
+```text
+MAX_ORPHAN_BLOCKS = 100
+```
+
+A node retries orphan blocks after:
+
+```text
+receiving a new block
+mining a block
+synchronizing with peers
+```
+
+If the missing parent arrives later, the orphan can be attached automatically.
+
+---
+
+## 18. Forks
 
 A fork happens when two valid blocks compete at the same height.
 
@@ -332,11 +358,11 @@ Example:
           └-> 3B
 ```
 
-In a real blockchain, temporary forks are expected. Nodes eventually converge toward the branch with the most accumulated work.
+QChain currently handles synchronization through the heaviest-chain rule. More advanced side-branch management is part of the roadmap.
 
 ---
 
-## 17. Heaviest-Chain Rule
+## 19. Heaviest-Chain Rule
 
 QChain uses cumulative work to decide which chain is better.
 
@@ -352,7 +378,44 @@ When synchronizing, a node validates candidate chains and adopts a valid chain o
 
 ---
 
-## 18. Node Synchronization
+## 20. Header-First Synchronization
+
+QChain includes a simplified header-first sync mechanism.
+
+Previous sync model:
+
+```text
+GET /chain
+download the full peer chain
+validate it
+adopt it if heavier
+```
+
+Current sync model:
+
+```text
+GET /status
+compare cumulative work
+GET /headers
+validate headers
+find common ancestor
+GET /blocks/<hash> for missing blocks only
+reconstruct candidate chain
+validate candidate chain
+adopt if heavier
+```
+
+This is more efficient because an up-to-date node does not download full blocks unnecessarily.
+
+If a node is already synchronized, sync returns:
+
+```text
+downloaded_block_count = 0
+```
+
+---
+
+## 21. Node Synchronization
 
 Nodes can synchronize with peers.
 
@@ -361,41 +424,35 @@ The sync process:
 ```text
 ask peers for status
 compare cumulative work
-download candidate chains
-validate candidate chains
+download headers from stronger peers
+validate headers
+find common ancestor
+download missing full blocks
+validate candidate chain
 adopt the heaviest valid chain
+retry orphan blocks
 ```
 
-If a node receives a block but is missing previous blocks, it can trigger synchronization.
-
-If a node detects a possible fork, it can also synchronize to discover the heaviest valid chain.
+If a node receives a block but is missing previous blocks, it can store the block as an orphan and trigger synchronization.
 
 ---
 
-## 19. Docker Testnet
+## 22. Docker Testnet
 
-QChain includes a Docker-based local testnet.
-
-The testnet runs three nodes:
-
-```text
-node1
-node2
-node3
-```
-
-Each node has its own blockchain storage under:
+QChain includes a Docker-based local testnet. The testnet runs three nodes, each with its own blockchain storage under:
 
 ```text
 data/docker/
 ```
 
-This allows realistic local testing of:
+This allows local testing of:
 
 ```text
 block propagation
 transaction propagation
 mempool synchronization
+orphan pool inspection
+header-first sync
 mining rewards
 transaction fees
 chain synchronization
@@ -404,13 +461,18 @@ heaviest-chain behavior
 
 ---
 
-## 20. Long-Term Research Direction
+## 23. Long-Term Research Direction
 
 QChain is intended as a research-oriented blockchain prototype.
 
 Possible future directions:
 
 ```text
+side-branch fork management
+orphan pool persistence
+block header synchronization improvements
+real peer discovery
+network protocol improvements
 post-quantum transaction signatures
 ML-DSA integration
 SLH-DSA integration
@@ -418,16 +480,12 @@ signature benchmarking
 quantum-resistant Proof-of-Work analysis
 STARK-based privacy layer
 zero-knowledge transaction experiments
-better fork management
-block header synchronization
-orphan block pool
-real peer discovery
-network protocol improvements
+whitepaper
 ```
 
 ---
 
-## 21. Security Warning
+## 24. Security Warning
 
 QChain is experimental software.
 

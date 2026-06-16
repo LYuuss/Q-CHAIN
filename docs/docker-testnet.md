@@ -18,40 +18,11 @@ node2 -> http://node2:5000
 node3 -> http://node3:5000
 ```
 
-This document explains how to start, connect, test, stop, and reset the Docker testnet.
+This document explains how to start, connect, test, stop, reset, and debug the Docker testnet.
 
 ---
 
-## 1. Files Required
-
-At the root of the project:
-
-```text
-Dockerfile
-docker-compose.yml
-requirements.txt
-scripts/
-src/
-data/
-```
-
-The Docker testnet uses:
-
-```text
-docker-compose.yml
-Dockerfile
-scripts/connect_docker_nodes.sh
-scripts/start_docker_testnet.sh
-scripts/stop_docker_testnet.sh
-scripts/reset_docker_testnet.sh
-scripts/status_all.sh
-scripts/mempool_all.sh
-scripts/balance_all.sh
-```
-
----
-
-## 2. Docker Compose Services
+## 1. Docker Compose Services
 
 The testnet contains three services:
 
@@ -73,7 +44,7 @@ The ports exposed on the host machine are:
 
 ---
 
-## 3. Advertised URL
+## 2. Advertised URL
 
 Each node uses an advertised URL.
 
@@ -87,17 +58,11 @@ node3 advertises http://node3:5000
 
 This is important because `127.0.0.1` inside a Docker container means the container itself, not the host machine.
 
-Without advertised URLs, a node may incorrectly broadcast to:
-
-```text
-http://127.0.0.1:5001
-```
-
-from inside Docker, which can cause connection errors.
+The `--advertised-url` option makes each node announce the correct Docker-internal URL.
 
 ---
 
-## 4. Start the Testnet
+## 3. Start the Testnet
 
 Recommended command:
 
@@ -128,7 +93,7 @@ bash scripts/connect_docker_nodes.sh
 
 ---
 
-## 5. Check Running Containers
+## 4. Check Running Containers
 
 ```bash
 docker compose ps
@@ -144,7 +109,7 @@ qchain-node3
 
 ---
 
-## 6. Check Node Status
+## 5. Check Node Status
 
 ```bash
 bash scripts/status_all.sh
@@ -167,9 +132,18 @@ same latest_hash after synchronization
 same cumulative_work after synchronization
 ```
 
+The status also includes:
+
+```text
+mempool_size
+orphan_pool_size
+advertised_url
+peers
+```
+
 ---
 
-## 7. Connect Docker Nodes
+## 6. Connect Docker Nodes
 
 Recommended:
 
@@ -182,10 +156,8 @@ This connects:
 ```text
 node1 -> node2
 node1 -> node3
-
 node2 -> node1
 node2 -> node3
-
 node3 -> node1
 node3 -> node2
 ```
@@ -200,13 +172,11 @@ http://node3:5000
 
 ---
 
-## 8. Mine a Block
+## 7. Mine a Block
 
 ```bash
 python3 src/qchain.py node-mine 5001 alice
 ```
-
-This asks node1 to mine a block and reward Alice.
 
 Check all nodes:
 
@@ -224,15 +194,13 @@ all nodes have the same cumulative_work
 
 ---
 
-## 9. Send a Transaction
+## 8. Send and Mine a Transaction
+
+Send a signed transaction from Alice to Bob:
 
 ```bash
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
 ```
-
-This sends a signed transaction from Alice to Bob through node1.
-
-The transaction is broadcast to the other nodes.
 
 Check mempools:
 
@@ -248,19 +216,13 @@ node2 mempool size = 1
 node3 mempool size = 1
 ```
 
----
-
-## 10. Mine the Transaction
+Mine the transaction:
 
 ```bash
 python3 src/qchain.py node-mine 5002 miner
 ```
 
-This asks node2 to mine a block containing the pending transaction.
-
-After mining, the block is broadcast to the other nodes.
-
-Check mempools:
+Check mempools again:
 
 ```bash
 bash scripts/mempool_all.sh
@@ -276,7 +238,7 @@ node3 mempool size = 0
 
 ---
 
-## 11. Check Balances
+## 9. Check Balances
 
 Check Bob on all nodes:
 
@@ -316,7 +278,87 @@ because:
 
 ---
 
-## 12. Stop the Testnet
+## 10. Inspect Headers
+
+```bash
+python3 src/qchain.py node-headers 5001
+python3 src/qchain.py node-headers 5002
+python3 src/qchain.py node-headers 5003
+```
+
+Equivalent endpoint:
+
+```text
+GET /headers
+```
+
+Headers are used by header-first sync.
+
+---
+
+## 11. Inspect Orphan Pools
+
+```bash
+python3 src/qchain.py node-orphans 5001
+python3 src/qchain.py node-orphans 5002
+python3 src/qchain.py node-orphans 5003
+```
+
+Equivalent endpoint:
+
+```text
+GET /orphans
+```
+
+Normal expected result:
+
+```json
+{
+  "blocks": [],
+  "max_size": 100,
+  "size": 0
+}
+```
+
+If a node receives a block before its parent, the block can be temporarily stored here.
+
+---
+
+## 12. Header-First Sync
+
+Synchronize a node:
+
+```bash
+python3 src/qchain.py node-sync 5001
+```
+
+The sync process:
+
+```text
+checks peers
+compares cumulative work
+downloads headers
+validates headers
+finds a common ancestor
+downloads only missing blocks
+reconstructs a candidate chain
+adopts it if heavier and valid
+processes orphan blocks
+```
+
+If the node is already up to date:
+
+```json
+{
+  "downloaded_block_count": 0
+}
+```
+
+This confirms that the node did not download full blocks unnecessarily.
+
+---
+
+## 13. Stop the Testnet
 
 ```bash
 bash scripts/stop_docker_testnet.sh
@@ -332,7 +374,7 @@ This stops containers but keeps Docker node data.
 
 ---
 
-## 13. Restart the Testnet
+## 14. Restart the Testnet
 
 If the Docker image does not need rebuilding:
 
@@ -354,7 +396,7 @@ bash scripts/start_docker_testnet.sh
 
 ---
 
-## 14. Reset the Testnet
+## 15. Reset the Testnet
 
 ```bash
 bash scripts/reset_docker_testnet.sh
@@ -366,7 +408,7 @@ This removes:
 data/docker/
 ```
 
-It deletes Docker node chains, balances, mempools, and peer files.
+It deletes Docker node chains, balances, mempools, orphan pools, and peer files.
 
 It does not delete wallets in:
 
@@ -376,7 +418,7 @@ data/wallets/
 
 ---
 
-## 15. View Logs
+## 16. View Logs
 
 All nodes:
 
@@ -394,7 +436,7 @@ docker compose logs -f node3
 
 ---
 
-## 16. Common Issues
+## 17. Common Issues
 
 ### Docker says no configuration file provided
 
@@ -412,8 +454,6 @@ Then run:
 docker compose up -d --build
 ```
 
----
-
 ### Connection refused to 127.0.0.1 from Docker
 
 Inside Docker, `127.0.0.1` means the current container.
@@ -425,10 +465,6 @@ http://node1:5000
 http://node2:5000
 http://node3:5000
 ```
-
-The `--advertised-url` option solves this by making each node announce the correct Docker-internal URL.
-
----
 
 ### balance shows zero but node-balance shows funds
 
@@ -448,7 +484,7 @@ When testing Docker, use `node-balance`.
 
 ---
 
-## 17. Full Test Scenario
+## 18. Full Test Scenario
 
 Start testnet:
 
@@ -485,6 +521,18 @@ Check balances:
 ```bash
 bash scripts/balance_all.sh bob
 bash scripts/balance_all.sh miner
+```
+
+Inspect headers:
+
+```bash
+python3 src/qchain.py node-headers 5001
+```
+
+Inspect orphan pool:
+
+```bash
+python3 src/qchain.py node-orphans 5001
 ```
 
 Stop testnet:

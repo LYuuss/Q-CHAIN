@@ -38,9 +38,20 @@ block broadcasting
 transaction broadcasting
 node synchronization
 heaviest-chain rule
+orphan block pool
+header-first synchronization
+block lookup by hash
 Docker-based 3-node local testnet
 CLI tools for local and node usage
 testnet helper scripts
+pytest test suite
+GitHub Actions CI
+```
+
+Current test suite:
+
+```text
+23 tests passing
 ```
 
 ---
@@ -49,16 +60,15 @@ testnet helper scripts
 
 ```text
 qchain/
+├── .github/workflows/tests.yml
 ├── data/
 │   ├── chain.json
 │   ├── wallets/
 │   └── docker/
-│
 ├── docs/
 │   ├── core-concepts.md
 │   ├── usage.md
 │   └── docker-testnet.md
-│
 ├── scripts/
 │   ├── connect_docker_nodes.sh
 │   ├── start_docker_testnet.sh
@@ -66,8 +76,8 @@ qchain/
 │   ├── reset_docker_testnet.sh
 │   ├── status_all.sh
 │   ├── mempool_all.sh
-│   └── balance_all.sh
-│
+│   ├── balance_all.sh
+│   └── run_tests.sh
 ├── src/
 │   ├── block.py
 │   ├── blockchain.py
@@ -77,10 +87,12 @@ qchain/
 │   ├── qchain.py
 │   ├── transaction.py
 │   └── wallet.py
-│
+├── tests/
 ├── Dockerfile
 ├── docker-compose.yml
+├── pytest.ini
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```
 
@@ -88,17 +100,22 @@ qchain/
 
 ## Requirements
 
-Install dependencies:
-
 ```bash
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-Current dependencies:
+Runtime dependencies:
 
 ```text
 cryptography
 flask
+```
+
+Development dependency:
+
+```text
+pytest
 ```
 
 ---
@@ -131,7 +148,7 @@ Send QCOIN from Alice to Bob:
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
 ```
 
-Check mempools:
+Inspect mempools:
 
 ```bash
 bash scripts/mempool_all.sh
@@ -150,6 +167,13 @@ bash scripts/balance_all.sh bob
 bash scripts/balance_all.sh miner
 ```
 
+Inspect headers and orphan pool:
+
+```bash
+python3 src/qchain.py node-headers 5001
+python3 src/qchain.py node-orphans 5001
+```
+
 Stop the testnet:
 
 ```bash
@@ -158,7 +182,9 @@ bash scripts/stop_docker_testnet.sh
 
 ---
 
-## Local CLI Commands
+## Common Commands
+
+Local chain commands:
 
 ```bash
 python3 src/qchain.py status
@@ -170,33 +196,61 @@ python3 src/qchain.py mempool
 python3 src/qchain.py validate
 ```
 
-These commands use the local chain:
-
-```text
-data/chain.json
-```
-
----
-
-## HTTP Node Commands
+HTTP node commands:
 
 ```bash
 python3 src/qchain.py node-status 5001
 python3 src/qchain.py node-balance 5001 bob
 python3 src/qchain.py node-mempool 5001
+python3 src/qchain.py node-orphans 5001
+python3 src/qchain.py node-headers 5001
 python3 src/qchain.py node-mine 5001 alice
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
 python3 src/qchain.py node-sync 5001
 python3 src/qchain.py node-connect 5001 5002
 ```
 
-When using Docker, prefer the helper scripts for connecting and checking all nodes.
+Useful HTTP endpoints:
+
+```text
+GET  /status
+GET  /chain
+GET  /headers
+GET  /blocks/<hash>
+GET  /mempool
+GET  /orphans
+GET  /balances/<address>
+GET  /peers
+POST /transactions
+POST /blocks
+POST /mine
+POST /peers
+POST /sync
+```
+
+---
+
+## Tests
+
+Run the full test suite:
+
+```bash
+python3 -m pytest
+```
+
+or:
+
+```bash
+bash scripts/run_tests.sh
+```
+
+GitHub Actions runs the same tests automatically on pushes and pull requests to `main`.
 
 ---
 
 ## Documentation
 
-More detailed documentation is available in:
+Detailed documentation is available in:
 
 ```text
 docs/core-concepts.md
@@ -209,32 +263,6 @@ Recommended reading order:
 1. `docs/core-concepts.md`
 2. `docs/usage.md`
 3. `docs/docker-testnet.md`
-
----
-
-## Docker Testnet
-
-The Docker testnet runs three nodes:
-
-```text
-node1 -> http://127.0.0.1:5001
-node2 -> http://127.0.0.1:5002
-node3 -> http://127.0.0.1:5003
-```
-
-Inside Docker, nodes communicate through:
-
-```text
-http://node1:5000
-http://node2:5000
-http://node3:5000
-```
-
-Each node has its own chain storage under:
-
-```text
-data/docker/
-```
 
 ---
 
@@ -253,16 +281,16 @@ The current implementation is intended for learning, research, and prototyping o
 Planned research and development directions:
 
 ```text
+side-branch fork management
+orphan pool persistence
+block header synchronization improvements
+peer discovery
+network protocol improvements
 post-quantum signatures
 ML-DSA integration
 SLH-DSA integration
 signature benchmarks
 quantum-resistant Proof-of-Work analysis
-orphan block pool
-better fork management
-block header synchronization
-peer discovery
-network protocol improvements
 STARK-based privacy layer
 zero-knowledge experiments
 whitepaper
