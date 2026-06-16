@@ -519,6 +519,24 @@ def command_node_balance(args) -> None:
     print(f"Balance: {response['balance']} {response['coin']}")
     print(f"Confirmed nonce: {response['confirmed_nonce']}")
 
+def command_node_headers(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/headers")
+
+    headers = response.get("headers", [])
+
+    print(f"Node: {node_url}")
+    print(f"Header count: {len(headers)}")
+    print()
+
+    for header in headers:
+        print(
+            f"#{header['index']} "
+            f"hash={header['hash']} "
+            f"prev={header['previous_hash']} "
+            f"difficulty={header['difficulty']} "
+            f"txs={header.get('transaction_count', '?')}"
+        )
 
 def build_parser() -> argparse.ArgumentParser:
 
@@ -612,6 +630,13 @@ def build_parser() -> argparse.ArgumentParser:
     node_status_parser.add_argument("node", help="Node port or URL, example: 5001")
     node_status_parser.set_defaults(func=command_node_status)
 
+    node_headers_parser = subparsers.add_parser(
+        "node-headers",
+        help="Show HTTP node block headers",
+    )
+    node_headers_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_headers_parser.set_defaults(func=command_node_headers)
+    
     node_mempool_parser = subparsers.add_parser(
         "node-mempool",
         help="Show HTTP node mempool",
@@ -625,7 +650,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     node_orphans_parser.add_argument("node", help="Node port or URL, example: 5001")
     node_orphans_parser.set_defaults(func=command_node_orphans)
-    
+
     node_sync_parser = subparsers.add_parser(
         "node-sync",
         help="Synchronize an HTTP node with its peers",

@@ -228,6 +228,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         adopted = False
         checked_peers = []
         errors = []
+        downloaded_blocks = []
 
         peer_statuses, status_errors = get_sorted_peers_by_work()
         errors.extend(status_errors)
@@ -265,12 +266,68 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 continue
 
             try:
-                data = fetch_json(f"{peer}/chain")
+                headers_data = fetch_json(f"{peer}/headers")
+                peer_headers = headers_data.get("headers", [])
 
-                candidate_chain = [
-                    Block.from_dict(block_data)
-                    for block_data in data.get("chain", [])
-                ]
+                headers_valid, headers_message = validate_headers(peer_headers)
+
+                if not headers_valid:
+                    errors.append(
+                        {
+                            "peer": peer,
+                            "error": headers_message,
+                        }
+                    )
+                    continue
+
+                if peer_headers[0]["hash"] != local_genesis_hash:
+                    errors.append(
+                        {
+                            "peer": peer,
+                            "error": "Peer headers have a different genesis block.",
+                        }
+                    )
+                    continue
+
+                common_index = find_common_header_index(peer_headers)
+
+                if common_index is None:
+                    errors.append(
+                        {
+                            "peer": peer,
+                            "error": "No common ancestor found.",
+                        }
+                    )
+                    continue
+
+                missing_headers = peer_headers[common_index + 1 :]
+
+                if not missing_headers:
+                    continue
+
+                missing_blocks = []
+
+                for header in missing_headers:
+                    block_hash = header["hash"]
+                    block_data = fetch_json(f"{peer}/blocks/{block_hash}")
+                    block = Block.from_dict(block_data["block"])
+
+                    if block.hash != block_hash:
+                        raise ValueError(
+                            f"Downloaded block hash mismatch: {block_hash}"
+                        )
+
+                    missing_blocks.append(block)
+
+                    downloaded_blocks.append(
+                        {
+                            "peer": peer,
+                            "index": block.index,
+                            "hash": block.hash,
+                        }
+                    )
+
+                candidate_chain = chain.chain[: common_index + 1] + missing_blocks
 
                 replaced = chain.replace_chain_if_better(candidate_chain)
 
@@ -295,6 +352,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "cumulative_work": chain.calculate_cumulative_work(),
             "checked_peers": checked_peers,
             "peer_statuses": peer_statuses,
+            "downloaded_blocks": downloaded_blocks,
+            "downloaded_block_count": len(downloaded_blocks),
             "orphan_result": orphan_result,
             "errors": errors,
         }
@@ -405,9 +464,12 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "message": f"{PROJECT_NAME} node is running",
                 "status_endpoint": "/status",
                 "chain_endpoint": "/chain",
+                "headers_endpoint": "/headers",
                 "mempool_endpoint": "/mempool",
                 "blocks_endpoint": "/blocks",
+                "block_by_hash_endpoint": "/blocks/<hash>",
                 "transactions_endpoint": "/transactions",
+                "orphans_endpoint": "/orphans",
                 "advertised_url": get_local_node_url(),
             }
         )
@@ -883,8 +945,128 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             }
         )
     
-    return app
+    def block_header_summary(block: Block) -> dict[str, Any]:
+        return {
+            "index": block.index,
+            "previous_hash": block.previous_hash,
+            "merkle_root": block.merkle_root,
+            "difficulty": block.difficulty,
+            "timestamp": block.timestamp,
+            "nonce": block.nonce,
+            "hash": block.hash,
+            "transaction_count": len(block.transactions),
+        }
 
+    def compute_header_hash(header: dict[str, Any]) -> str:
+        header_data = {
+            "index": header["index"],
+            "previous_hash": header["previous_hash"],
+            "merkle_root": header["merkle_root"],
+            "difficulty": header["difficulty"],
+            "timestamp": header["timestamp"],
+            "nonce": header["nonce"],
+        }
+
+        return __import__("hashlib").sha3_256(
+            json.dumps(
+                header_data,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+    def validate_headers(headers: list[dict[str, Any]]) -> tuple[bool, str]:
+        if not headers:
+            return False, "Header list is empty."
+
+        for position, header in enumerate(headers):
+            required_fields = {
+                "index",
+                "previous_hash",
+                "merkle_root",
+                "difficulty",
+                "timestamp",
+                "nonce",
+                "hash",
+            }
+
+            missing_fields = required_fields - set(header.keys())
+
+            if missing_fields:
+                return False, f"Header is missing fields: {sorted(missing_fields)}"
+
+            expected_hash = compute_header_hash(header)
+
+            if header["hash"] != expected_hash:
+                return False, f"Invalid header hash at position {position}."
+
+            if not header["hash"].startswith("0" * header["difficulty"]):
+                return False, f"Invalid Proof of Work at position {position}."
+
+            if header["index"] != position:
+                return False, f"Invalid header index at position {position}."
+
+            if position > 0:
+                previous_header = headers[position - 1]
+
+                if header["previous_hash"] != previous_header["hash"]:
+                    return False, f"Broken header link at position {position}."
+
+        return True, "Headers are valid."
+
+    def find_common_header_index(peer_headers: list[dict[str, Any]]) -> int | None:
+        local_hash_to_index = {
+            block.hash: index
+            for index, block in enumerate(chain.chain)
+        }
+
+        for peer_header in reversed(peer_headers):
+            peer_hash = peer_header["hash"]
+
+            if peer_hash in local_hash_to_index:
+                return local_hash_to_index[peer_hash]
+
+        return None
+    @app.get("/headers")
+    def get_headers():
+        return jsonify(
+            {
+                "summary": chain_summary(),
+                "headers": [
+                    block_header_summary(block)
+                    for block in chain.chain
+                ],
+            }
+        )
+    @app.get("/blocks/<block_hash>")
+    def get_block_by_hash(block_hash: str):
+        for block in chain.chain:
+            if block.hash == block_hash:
+                return jsonify(
+                    {
+                        "found": True,
+                        "block": block.to_dict(),
+                    }
+                )
+
+        if block_hash in orphan_blocks:
+            return jsonify(
+                {
+                    "found": True,
+                    "orphan": True,
+                    "block": orphan_blocks[block_hash].to_dict(),
+                }
+            )
+
+        return jsonify(
+            {
+                "found": False,
+                "error": "Block not found.",
+                "hash": block_hash,
+            }
+        ), 404
+    
+    return app
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
