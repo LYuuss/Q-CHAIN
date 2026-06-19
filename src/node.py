@@ -19,6 +19,7 @@ from config import (
 from transaction import Transaction
 
 MAX_ORPHAN_BLOCKS = 100
+MAX_SIDE_BRANCH_BLOCKS = 200
 
 class HttpJsonError(Exception):
     def __init__(self, status_code: int, body: dict[str, Any] | None, raw_body: str):
@@ -144,6 +145,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     peers = load_peers(peers_path)
 
     orphan_blocks: dict[str, Block] = {}
+    side_branch_blocks: dict[str, Block] = {}
 
     app = Flask(__name__)
 
@@ -168,6 +170,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "mempool_size": len(chain.mempool),
             "orphan_pool_size": len(orphan_blocks),
             "max_orphan_blocks": MAX_ORPHAN_BLOCKS,
+            "side_branch_pool_size": len(side_branch_blocks),
+            "max_side_branch_blocks": MAX_SIDE_BRANCH_BLOCKS,
             "valid": chain.is_valid(),
             "peers": sorted(peers),
             "advertised_url": get_local_node_url(),
@@ -470,6 +474,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "block_by_hash_endpoint": "/blocks/<hash>",
                 "transactions_endpoint": "/transactions",
                 "orphans_endpoint": "/orphans",
+                "side_branches_endpoint": "/side-branches",
                 "advertised_url": get_local_node_url(),
             }
         )
@@ -624,6 +629,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         if accepted:
             orphan_result = process_orphans()
+            side_branch_result = try_adopt_side_branches()
 
             broadcast_results = broadcast_block(
                 block=block,
@@ -637,15 +643,42 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "message": message,
                     "sync_triggered": False,
                     "orphan_stored": False,
+                    "side_branch_stored": False,
                     "height": len(chain.chain) - 1,
                     "latest_hash": chain.latest_block().hash,
                     "cumulative_work": chain.calculate_cumulative_work(),
                     "orphan_pool_size": len(orphan_blocks),
+                    "side_branch_pool_size": len(side_branch_blocks),
                     "orphan_result": orphan_result,
+                    "side_branch_result": side_branch_result,
                     "broadcast_results": broadcast_results,
                 }
             ), 201
-        
+
+        if can_store_side_branch_block(block):
+            stored, side_branch_message = add_side_branch_block(block)
+
+            orphan_result = process_orphans()
+            side_branch_result = try_adopt_side_branches()
+
+            return jsonify(
+                {
+                    "accepted": False,
+                    "message": message,
+                    "sync_triggered": False,
+                    "orphan_stored": False,
+                    "side_branch_stored": stored,
+                    "side_branch_message": side_branch_message,
+                    "orphan_result": orphan_result,
+                    "side_branch_result": side_branch_result,
+                    "height": len(chain.chain) - 1,
+                    "latest_hash": chain.latest_block().hash,
+                    "cumulative_work": chain.calculate_cumulative_work(),
+                    "orphan_pool_size": len(orphan_blocks),
+                    "side_branch_pool_size": len(side_branch_blocks),
+                }
+            ), 202
+                
         if should_store_as_orphan(block, message):
             stored, orphan_message = add_orphan_block(block)
 
@@ -690,6 +723,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "latest_hash": chain.latest_block().hash,
                     "cumulative_work": chain.calculate_cumulative_work(),
                     "orphan_pool_size": len(orphan_blocks),
+                    "side_branch_pool_size": len(side_branch_blocks),
                 }
             ), status_code
 
@@ -703,6 +737,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "latest_hash": chain.latest_block().hash,
                 "cumulative_work": chain.calculate_cumulative_work(),
                 "orphan_pool_size": len(orphan_blocks),
+                    "side_branch_pool_size": len(side_branch_blocks),
             }
         ), 409
 
@@ -740,7 +775,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         )
 
         orphan_result = process_orphans()
-        
+        side_branch_result = try_adopt_side_branches()
+
         return jsonify(
             {
                 "mined": True,
@@ -753,7 +789,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "coin": COIN_NAME,
                 "broadcast_results": broadcast_results,
                 "orphan_result": orphan_result,
-                "orphan_pool_size": len(orphan_blocks),                
+                "orphan_pool_size": len(orphan_blocks),
+                "side_branch_result": side_branch_result,
+                "side_branch_pool_size": len(side_branch_blocks),
             }
         )
 
@@ -872,6 +910,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         }
 
     def process_orphans() -> dict[str, Any]:
+        moved_to_side_branch_blocks = []
         attached_blocks = []
         removed_blocks = []
         progress = True
@@ -911,7 +950,21 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                             "reason": message,
                         }
                     )
+                elif can_store_side_branch_block(orphan_block):
+                    stored, side_branch_message = add_side_branch_block(orphan_block)
 
+                    del orphan_blocks[orphan_hash]
+                    progress = True
+
+                    moved_to_side_branch_blocks.append(
+                        {
+                            "hash": orphan_block.hash,
+                            "index": orphan_block.index,
+                            "stored": stored,
+                            "message": side_branch_message,
+                        }
+                    )
+                
                 elif not can_remain_orphan(orphan_block, message):
                     del orphan_blocks[orphan_hash]
                     progress = True
@@ -927,9 +980,163 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         return {
             "attached_count": len(attached_blocks),
             "removed_count": len(removed_blocks),
+            "moved_to_side_branch_count": len(moved_to_side_branch_blocks),
             "remaining_count": len(orphan_blocks),
             "attached_blocks": attached_blocks,
             "removed_blocks": removed_blocks,
+            "moved_to_side_branch_blocks": moved_to_side_branch_blocks,
+        }
+    
+    def side_branch_summary(block: Block) -> dict[str, Any]:
+        return {
+            "index": block.index,
+            "hash": block.hash,
+            "previous_hash": block.previous_hash,
+            "difficulty": block.difficulty,
+            "transaction_count": len(block.transactions),
+        }
+
+    def find_chain_index_by_hash(block_hash: str) -> int | None:
+        for index, block in enumerate(chain.chain):
+            if block.hash == block_hash:
+                return index
+
+        return None
+
+    def side_branch_block_is_known(block_hash: str) -> bool:
+        return block_hash in side_branch_blocks or block_hash in known_block_hashes()
+
+    def can_store_side_branch_block(block: Block) -> bool:
+        if side_branch_block_is_known(block.hash):
+            return False
+
+        if not block_has_basic_validity(block):
+            return False
+
+        parent_is_in_main_chain = find_chain_index_by_hash(block.previous_hash) is not None
+        parent_is_in_side_branch = block.previous_hash in side_branch_blocks
+
+        return parent_is_in_main_chain or parent_is_in_side_branch
+
+    def add_side_branch_block(block: Block) -> tuple[bool, str]:
+        if side_branch_block_is_known(block.hash):
+            return False, "Block already known or already stored as side branch."
+
+        if len(side_branch_blocks) >= MAX_SIDE_BRANCH_BLOCKS:
+            oldest_hash = next(iter(side_branch_blocks))
+            del side_branch_blocks[oldest_hash]
+
+        side_branch_blocks[block.hash] = block
+        return True, "Side-branch block stored."
+
+    def get_side_branch_tip_hashes() -> list[str]:
+        referenced_hashes = {
+            block.previous_hash
+            for block in side_branch_blocks.values()
+        }
+
+        return [
+            block_hash
+            for block_hash in side_branch_blocks.keys()
+            if block_hash not in referenced_hashes
+        ]
+
+    def build_side_branch_candidate(tip_hash: str) -> tuple[list[Block] | None, str]:
+        if tip_hash not in side_branch_blocks:
+            return None, "Unknown side-branch tip."
+
+        branch_blocks = []
+        current_hash = tip_hash
+        seen_hashes = set()
+
+        while current_hash in side_branch_blocks:
+            if current_hash in seen_hashes:
+                return None, "Cycle detected in side branch."
+
+            seen_hashes.add(current_hash)
+
+            current_block = side_branch_blocks[current_hash]
+            branch_blocks.append(current_block)
+
+            parent_index = find_chain_index_by_hash(current_block.previous_hash)
+
+            if parent_index is not None:
+                branch_blocks.reverse()
+
+                candidate_chain = chain.chain[: parent_index + 1] + branch_blocks
+
+                return candidate_chain, "Candidate side branch built."
+
+            current_hash = current_block.previous_hash
+
+        return None, "Missing common ancestor."
+
+    def remove_side_branch_blocks_present_in_main_chain() -> int:
+        main_hashes = known_block_hashes()
+        removed_count = 0
+
+        for block_hash in list(side_branch_blocks.keys()):
+            if block_hash in main_hashes:
+                del side_branch_blocks[block_hash]
+                removed_count += 1
+
+        return removed_count
+
+    def try_adopt_side_branches() -> dict[str, Any]:
+        checked_branches = []
+        adopted_branches = []
+
+        for tip_hash in get_side_branch_tip_hashes():
+            candidate_chain, message = build_side_branch_candidate(tip_hash)
+
+            if candidate_chain is None:
+                checked_branches.append(
+                    {
+                        "tip_hash": tip_hash,
+                        "adopted": False,
+                        "message": message,
+                    }
+                )
+                continue
+
+            old_height = len(chain.chain) - 1
+            old_latest_hash = chain.latest_block().hash
+
+            replaced = chain.replace_chain_if_better(candidate_chain)
+
+            checked_branches.append(
+                {
+                    "tip_hash": tip_hash,
+                    "adopted": replaced,
+                    "message": message,
+                    "candidate_height": len(candidate_chain) - 1,
+                    "old_height": old_height,
+                    "old_latest_hash": old_latest_hash,
+                    "new_height": len(chain.chain) - 1,
+                    "new_latest_hash": chain.latest_block().hash,
+                }
+            )
+
+            if replaced:
+                removed_count = remove_side_branch_blocks_present_in_main_chain()
+
+                adopted_branches.append(
+                    {
+                        "tip_hash": tip_hash,
+                        "old_height": old_height,
+                        "new_height": len(chain.chain) - 1,
+                        "old_latest_hash": old_latest_hash,
+                        "new_latest_hash": chain.latest_block().hash,
+                        "removed_side_branch_blocks": removed_count,
+                    }
+                )
+
+        return {
+            "checked_count": len(checked_branches),
+            "adopted_count": len(adopted_branches),
+            "remaining_count": len(side_branch_blocks),
+            "checked_branches": checked_branches,
+            "adopted_branches": adopted_branches,
         }
     
     @app.get("/orphans")
@@ -1027,6 +1234,21 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 return local_hash_to_index[peer_hash]
 
         return None
+    
+    @app.get("/side-branches")
+    def get_side_branches():
+        return jsonify(
+            {
+                "size": len(side_branch_blocks),
+                "max_size": MAX_SIDE_BRANCH_BLOCKS,
+                "tip_hashes": get_side_branch_tip_hashes(),
+                "blocks": [
+                    side_branch_summary(block)
+                    for block in side_branch_blocks.values()
+                ],
+            }
+        )
+    
     @app.get("/headers")
     def get_headers():
         return jsonify(

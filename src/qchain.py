@@ -703,8 +703,19 @@ def build_parser() -> argparse.ArgumentParser:
     node_balance_parser.add_argument("wallet", help="Wallet name")
     node_balance_parser.set_defaults(func=command_node_balance)
 
+    node_side_branches_parser = subparsers.add_parser(
+        "node-side-branches",
+        help="Show HTTP node side-branch pool",
+    )
+    node_side_branches_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_side_branches_parser.set_defaults(func=command_node_side_branches)
+    
     return parser
 
+def command_node_side_branches(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/side-branches")
+    print_json(response)
 
 def main() -> None:
     parser = build_parser()
