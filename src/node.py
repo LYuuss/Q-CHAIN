@@ -165,6 +165,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     peers_path = data_dir / "peers.json"
     block_store_path = data_dir / "block_index.json"
     orphan_blocks_path = data_dir / "orphan_blocks.json"
+    side_branch_blocks_path = data_dir / "side_branch_blocks.json"
 
     chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
@@ -181,12 +182,16 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     orphan_blocks = load_block_pool(orphan_blocks_path)
     block_store.put_many(list(orphan_blocks.values()))
 
-    side_branch_blocks: dict[str, Block] = {}
+    side_branch_blocks = load_block_pool(side_branch_blocks_path)
+    block_store.put_many(list(side_branch_blocks.values()))
 
     app = Flask(__name__)
 
     def save_orphan_pool() -> None:
         save_block_pool(orphan_blocks_path, orphan_blocks)
+
+    def save_side_branch_pool() -> None:
+        save_block_pool(side_branch_blocks_path, side_branch_blocks)
 
     def get_local_node_url() -> str:
         if advertised_url is not None:
@@ -212,6 +217,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "max_orphan_blocks": MAX_ORPHAN_BLOCKS,
             "side_branch_pool_size": len(side_branch_blocks),
             "max_side_branch_blocks": MAX_SIDE_BRANCH_BLOCKS,
+            "side_branch_blocks_path": str(side_branch_blocks_path),
             "valid": chain.is_valid(),
             "peers": sorted(peers),
             "advertised_url": get_local_node_url(),
@@ -1100,6 +1106,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         side_branch_blocks[block.hash] = block
         block_store.put(block)
+        save_side_branch_pool()
 
         return True, "Side-branch block stored."
 
@@ -1154,7 +1161,18 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 del side_branch_blocks[block_hash]
                 removed_count += 1
 
+        if removed_count > 0:
+            save_side_branch_pool()
+
         return removed_count
+
+    def cleanup_side_branch_pool() -> dict[str, Any]:
+        removed_count = remove_side_branch_blocks_present_in_main_chain()
+
+        return {
+            "removed_count": removed_count,
+            "remaining_count": len(side_branch_blocks),
+        }
 
     def try_adopt_side_branches() -> dict[str, Any]:
         checked_branches = []
