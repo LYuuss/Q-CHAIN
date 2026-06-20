@@ -1,8 +1,6 @@
 # QChain Docker Testnet
 
-QChain includes a Docker-based local testnet.
-
-The testnet runs three independent QChain nodes:
+QChain includes a Docker-based local testnet with three nodes:
 
 ```text
 node1 -> http://127.0.0.1:5001
@@ -10,159 +8,7 @@ node2 -> http://127.0.0.1:5002
 node3 -> http://127.0.0.1:5003
 ```
 
-Inside Docker, the nodes communicate through internal service names:
-
-```text
-node1 -> http://node1:5000
-node2 -> http://node2:5000
-node3 -> http://node3:5000
-```
-
-This document explains how to start, connect, test, stop, reset, and debug the Docker testnet.
-
----
-
-## 1. Docker Compose Services
-
-The testnet contains three services:
-
-```text
-node1
-node2
-node3
-```
-
-Each container runs QChain on port `5000` internally.
-
-The ports exposed on the host machine are:
-
-```text
-5001 -> node1:5000
-5002 -> node2:5000
-5003 -> node3:5000
-```
-
----
-
-## 2. Advertised URL
-
-Each node uses an advertised URL.
-
-Example:
-
-```text
-node1 advertises http://node1:5000
-node2 advertises http://node2:5000
-node3 advertises http://node3:5000
-```
-
-This is important because `127.0.0.1` inside a Docker container means the container itself, not the host machine.
-
-The `--advertised-url` option makes each node announce the correct Docker-internal URL.
-
----
-
-## 3. Start the Testnet
-
-Recommended command:
-
-```bash
-bash scripts/start_docker_testnet.sh
-```
-
-This script:
-
-```text
-builds the Docker image
-starts node1, node2, and node3
-waits for the nodes to be ready
-connects the nodes together using Docker internal URLs
-```
-
-Manual command:
-
-```bash
-docker compose up -d --build
-```
-
-Then connect peers manually or with:
-
-```bash
-bash scripts/connect_docker_nodes.sh
-```
-
----
-
-## 4. Check Running Containers
-
-```bash
-docker compose ps
-```
-
-You should see:
-
-```text
-qchain-node1
-qchain-node2
-qchain-node3
-```
-
----
-
-## 5. Check Node Status
-
-```bash
-bash scripts/status_all.sh
-```
-
-Or manually:
-
-```bash
-python3 src/qchain.py node-status 5001
-python3 src/qchain.py node-status 5002
-python3 src/qchain.py node-status 5003
-```
-
-All nodes should have:
-
-```text
-valid = true
-same genesis_hash
-same latest_hash after synchronization
-same cumulative_work after synchronization
-```
-
-The status also includes:
-
-```text
-mempool_size
-orphan_pool_size
-advertised_url
-peers
-```
-
----
-
-## 6. Connect Docker Nodes
-
-Recommended:
-
-```bash
-bash scripts/connect_docker_nodes.sh
-```
-
-This connects:
-
-```text
-node1 -> node2
-node1 -> node3
-node2 -> node1
-node2 -> node3
-node3 -> node1
-node3 -> node2
-```
-
-The script uses Docker internal URLs:
+Inside Docker, nodes communicate through:
 
 ```text
 http://node1:5000
@@ -172,113 +18,92 @@ http://node3:5000
 
 ---
 
-## 7. Mine a Block
+## Start
 
 ```bash
-python3 src/qchain.py node-mine 5001 alice
+bash scripts/start_docker_testnet.sh
 ```
 
-Check all nodes:
+Manual start:
+
+```bash
+docker compose up -d --build
+bash scripts/connect_docker_nodes.sh
+```
+
+---
+
+## Status
 
 ```bash
 bash scripts/status_all.sh
 ```
 
-Expected result:
+Or:
+
+```bash
+python3 src/qchain.py node-status 5001
+python3 src/qchain.py node-status 5002
+python3 src/qchain.py node-status 5003
+```
+
+Status includes:
 
 ```text
-all nodes have the same height
-all nodes have the same latest_hash
-all nodes have the same cumulative_work
+height
+latest_hash
+cumulative_work
+mempool_size
+orphan_pool_size
+side_branch_pool_size
+peers
+valid
 ```
 
 ---
 
-## 8. Send and Mine a Transaction
+## Mine
 
-Send a signed transaction from Alice to Bob:
+```bash
+python3 src/qchain.py node-mine 5001 alice
+```
+
+---
+
+## Send Transaction
 
 ```bash
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
 ```
 
-Check mempools:
+---
+
+## Check Mempools
 
 ```bash
 bash scripts/mempool_all.sh
 ```
 
-Expected result:
+---
 
-```text
-node1 mempool size = 1
-node2 mempool size = 1
-node3 mempool size = 1
-```
-
-Mine the transaction:
+## Mine Transaction
 
 ```bash
 python3 src/qchain.py node-mine 5002 miner
 ```
 
-Check mempools again:
-
-```bash
-bash scripts/mempool_all.sh
-```
-
-Expected result:
-
-```text
-node1 mempool size = 0
-node2 mempool size = 0
-node3 mempool size = 0
-```
-
 ---
 
-## 9. Check Balances
-
-Check Bob on all nodes:
+## Check Balances
 
 ```bash
 bash scripts/balance_all.sh bob
-```
-
-Expected after one transaction:
-
-```text
-Bob = 10 QCOIN
-```
-
-Expected after two transactions of 10 QCOIN:
-
-```text
-Bob = 20 QCOIN
-```
-
-Check miner:
-
-```bash
 bash scripts/balance_all.sh miner
-```
-
-If the miner mined two transaction blocks with 2 QCOIN fee each:
-
-```text
-Miner = 104 QCOIN
-```
-
-because:
-
-```text
-2 × (50 reward + 2 fee) = 104 QCOIN
 ```
 
 ---
 
-## 10. Inspect Headers
+## Inspect Headers
 
 ```bash
 python3 src/qchain.py node-headers 5001
@@ -292,11 +117,9 @@ Equivalent endpoint:
 GET /headers
 ```
 
-Headers are used by header-first sync.
-
 ---
 
-## 11. Inspect Orphan Pools
+## Inspect Orphan Pools
 
 ```bash
 python3 src/qchain.py node-orphans 5001
@@ -310,43 +133,57 @@ Equivalent endpoint:
 GET /orphans
 ```
 
-Normal expected result:
+---
+
+## Inspect Side Branches
+
+```bash
+python3 src/qchain.py node-side-branches 5001
+python3 src/qchain.py node-side-branches 5002
+python3 src/qchain.py node-side-branches 5003
+```
+
+Equivalent endpoint:
+
+```text
+GET /side-branches
+```
+
+Normal result:
 
 ```json
 {
   "blocks": [],
-  "max_size": 100,
-  "size": 0
+  "max_size": 200,
+  "size": 0,
+  "tip_hashes": []
 }
 ```
 
-If a node receives a block before its parent, the block can be temporarily stored here.
-
 ---
 
-## 12. Header-First Sync
-
-Synchronize a node:
+## Header-First Sync
 
 ```bash
 python3 src/qchain.py node-sync 5001
 ```
 
-The sync process:
+The node:
 
 ```text
 checks peers
 compares cumulative work
 downloads headers
 validates headers
-finds a common ancestor
+finds common ancestor
 downloads only missing blocks
-reconstructs a candidate chain
-adopts it if heavier and valid
-processes orphan blocks
+rebuilds candidate chain
+adopts if heavier
+processes orphans
+processes side branches
 ```
 
-If the node is already up to date:
+If already synchronized:
 
 ```json
 {
@@ -354,61 +191,65 @@ If the node is already up to date:
 }
 ```
 
-This confirms that the node did not download full blocks unnecessarily.
+---
+
+## Fork and Reorg Behavior
+
+QChain now distinguishes:
+
+```text
+direct extension:
+    accepted into main chain
+
+missing parent:
+    stored in orphan pool
+
+known parent but not current tip:
+    stored in side-branch pool
+```
+
+If a side branch becomes heavier, QChain can automatically reorganize.
+
+Example:
+
+```text
+current main chain:
+0 -> 1A
+
+side branch:
+0 -> 1B -> 2B
+
+after reorg:
+0 -> 1B -> 2B
+```
 
 ---
 
-## 13. Stop the Testnet
+## Stop
 
 ```bash
 bash scripts/stop_docker_testnet.sh
 ```
 
-Equivalent:
+or:
 
 ```bash
 docker compose down
 ```
 
-This stops containers but keeps Docker node data.
-
 ---
 
-## 14. Restart the Testnet
-
-If the Docker image does not need rebuilding:
-
-```bash
-docker compose up -d
-```
-
-If source code used inside Docker changed:
-
-```bash
-docker compose up -d --build
-```
-
-Or use:
-
-```bash
-bash scripts/start_docker_testnet.sh
-```
-
----
-
-## 15. Reset the Testnet
+## Reset
 
 ```bash
 bash scripts/reset_docker_testnet.sh
 ```
 
-This removes:
+This removes Docker node data under:
 
 ```text
 data/docker/
 ```
-
-It deletes Docker node chains, balances, mempools, orphan pools, and peer files.
 
 It does not delete wallets in:
 
@@ -418,43 +259,21 @@ data/wallets/
 
 ---
 
-## 16. View Logs
-
-All nodes:
+## Logs
 
 ```bash
 docker compose logs -f
 ```
 
-One node:
+For one node:
 
 ```bash
 docker compose logs -f node1
-docker compose logs -f node2
-docker compose logs -f node3
 ```
 
 ---
 
-## 17. Common Issues
-
-### Docker says no configuration file provided
-
-Make sure you are in the project root where `docker-compose.yml` exists.
-
-Check:
-
-```bash
-ls docker-compose.yml
-```
-
-Then run:
-
-```bash
-docker compose up -d --build
-```
-
-### Connection refused to 127.0.0.1 from Docker
+## Common Docker Issue
 
 Inside Docker, `127.0.0.1` means the current container.
 
@@ -466,77 +285,4 @@ http://node2:5000
 http://node3:5000
 ```
 
-### balance shows zero but node-balance shows funds
-
-This command checks the local CLI chain:
-
-```bash
-python3 src/qchain.py balance bob
-```
-
-This command checks the Docker node:
-
-```bash
-python3 src/qchain.py node-balance 5001 bob
-```
-
-When testing Docker, use `node-balance`.
-
----
-
-## 18. Full Test Scenario
-
-Start testnet:
-
-```bash
-bash scripts/start_docker_testnet.sh
-```
-
-Mine funds to Alice:
-
-```bash
-python3 src/qchain.py node-mine 5001 alice
-```
-
-Send from Alice to Bob:
-
-```bash
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-```
-
-Check mempools:
-
-```bash
-bash scripts/mempool_all.sh
-```
-
-Mine transaction:
-
-```bash
-python3 src/qchain.py node-mine 5002 miner
-```
-
-Check balances:
-
-```bash
-bash scripts/balance_all.sh bob
-bash scripts/balance_all.sh miner
-```
-
-Inspect headers:
-
-```bash
-python3 src/qchain.py node-headers 5001
-```
-
-Inspect orphan pool:
-
-```bash
-python3 src/qchain.py node-orphans 5001
-```
-
-Stop testnet:
-
-```bash
-bash scripts/stop_docker_testnet.sh
-```
+The `--advertised-url` option makes each node announce the correct Docker-internal URL.

@@ -1,49 +1,27 @@
 # QChain Usage Guide
 
-This document explains how to use QChain from the command line.
-
-QChain provides two main modes:
+QChain can be used in two modes:
 
 ```text
 local CLI mode
 HTTP node mode
 ```
 
-Local CLI mode uses:
+Local mode uses:
 
 ```text
 data/chain.json
 ```
 
-HTTP node mode uses a running node, for example:
+HTTP node mode communicates with a running node, for example:
 
 ```text
 http://127.0.0.1:5001
 ```
 
-When using the Docker testnet, prefer the `node-*` commands.
-
 ---
 
-## 1. Requirements
-
-Install runtime dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Install test dependencies:
-
-```bash
-pip install -r requirements-dev.txt
-```
-
----
-
-## 2. Wallets
-
-Create wallets:
+## Create Wallets
 
 ```bash
 python3 src/qchain.py wallet-create alice
@@ -51,79 +29,21 @@ python3 src/qchain.py wallet-create bob
 python3 src/qchain.py wallet-create miner
 ```
 
-List wallets:
-
-```bash
-python3 src/qchain.py wallets
-```
-
-Wallets are stored in:
-
-```text
-data/wallets/
-```
-
-Private keys are encrypted locally. The password is required to sign transactions.
-
 ---
 
-# Local CLI Mode
-
-Local CLI mode is useful for simple single-chain testing.
-
-It uses:
-
-```text
-data/chain.json
-```
-
-It does not interact with Docker nodes.
-
-## Local Status
+## Local Commands
 
 ```bash
 python3 src/qchain.py status
-```
-
-## Local Mining
-
-```bash
-python3 src/qchain.py mine alice
-```
-
-## Local Balance
-
-```bash
+python3 src/qchain.py wallets
 python3 src/qchain.py balance alice
-```
-
-Important: this checks the local CLI chain only. It does not check Docker node balances.
-
-## Local Send
-
-```bash
+python3 src/qchain.py mine alice
 python3 src/qchain.py send alice bob 10 --fee 2
-```
-
-## Local Mempool
-
-```bash
 python3 src/qchain.py mempool
-```
-
-## Validate Local Chain
-
-```bash
 python3 src/qchain.py validate
 ```
 
 ---
-
-# HTTP Node Mode
-
-HTTP node mode communicates with running QChain nodes.
-
-This is the recommended mode for the Docker testnet.
 
 ## Node Status
 
@@ -131,7 +51,7 @@ This is the recommended mode for the Docker testnet.
 python3 src/qchain.py node-status 5001
 ```
 
-The status includes:
+Status includes:
 
 ```text
 height
@@ -140,11 +60,14 @@ genesis_hash
 cumulative_work
 mempool_size
 orphan_pool_size
+side_branch_pool_size
 next_block_difficulty
 peers
 advertised_url
 valid
 ```
+
+---
 
 ## Node Headers
 
@@ -152,13 +75,13 @@ valid
 python3 src/qchain.py node-headers 5001
 ```
 
-This displays compact block headers from a node.
-
 Equivalent endpoint:
 
 ```text
 GET /headers
 ```
+
+---
 
 ## Node Orphans
 
@@ -166,15 +89,13 @@ GET /headers
 python3 src/qchain.py node-orphans 5001
 ```
 
-This displays the orphan block pool of a node.
-
 Equivalent endpoint:
 
 ```text
 GET /orphans
 ```
 
-Expected normal result:
+Normal result:
 
 ```json
 {
@@ -184,19 +105,42 @@ Expected normal result:
 }
 ```
 
+---
+
+## Node Side Branches
+
+```bash
+python3 src/qchain.py node-side-branches 5001
+```
+
+Equivalent endpoint:
+
+```text
+GET /side-branches
+```
+
+Normal result:
+
+```json
+{
+  "blocks": [],
+  "max_size": 200,
+  "size": 0,
+  "tip_hashes": []
+}
+```
+
+This is useful for debugging forks and reorg behavior.
+
+---
+
 ## Node Balance
 
 ```bash
 python3 src/qchain.py node-balance 5001 bob
 ```
 
-To compare all nodes:
-
-```bash
-python3 src/qchain.py node-balance 5001 bob
-python3 src/qchain.py node-balance 5002 bob
-python3 src/qchain.py node-balance 5003 bob
-```
+---
 
 ## Node Mining
 
@@ -204,11 +148,13 @@ python3 src/qchain.py node-balance 5003 bob
 python3 src/qchain.py node-mine 5001 alice
 ```
 
-With a maximum number of transactions:
+With a transaction limit:
 
 ```bash
 python3 src/qchain.py node-mine 5001 miner --max-tx 5
 ```
+
+---
 
 ## Node Send
 
@@ -216,23 +162,17 @@ python3 src/qchain.py node-mine 5001 miner --max-tx 5
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
 ```
 
-This does the following:
+The command signs a transaction locally, sends it to the node, and the node broadcasts it to peers.
 
-```text
-loads Alice wallet
-asks for Alice password
-signs the transaction
-sends it to node 5001
-node 5001 validates it
-node 5001 adds it to its mempool
-node 5001 broadcasts it to peers
-```
+---
 
 ## Node Mempool
 
 ```bash
 python3 src/qchain.py node-mempool 5001
 ```
+
+---
 
 ## Node Sync
 
@@ -247,14 +187,15 @@ checks peer status
 compares cumulative work
 downloads headers
 validates headers
-finds the latest common ancestor
+finds common ancestor
 downloads only missing blocks
-validates the reconstructed candidate chain
-adopts the chain if it is heavier
+validates candidate chain
+adopts if heavier
 processes orphan blocks
+processes side branches
 ```
 
-If the node is already up to date, the response should include:
+If already up to date:
 
 ```json
 {
@@ -262,86 +203,53 @@ If the node is already up to date, the response should include:
 }
 ```
 
-## Node Connect
+---
 
-For non-Docker local nodes, connect two nodes with:
+## Complete Example
 
 ```bash
-python3 src/qchain.py node-connect 5001 5002
-```
+bash scripts/start_docker_testnet.sh
 
-For Docker nodes, use the Docker-specific script because containers must use internal service names such as `http://node1:5000`.
+python3 src/qchain.py node-mine 5001 alice
+python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
+python3 src/qchain.py node-mine 5002 miner
+
+python3 src/qchain.py node-balance 5001 bob
+python3 src/qchain.py node-balance 5001 miner
+
+python3 src/qchain.py node-headers 5001
+python3 src/qchain.py node-orphans 5001
+python3 src/qchain.py node-side-branches 5001
+```
 
 ---
 
-# Complete Example: Alice Sends QCOIN to Bob
+## Local Balance vs Node Balance
 
-Mine funds to Alice:
-
-```bash
-python3 src/qchain.py node-mine 5001 alice
-```
-
-Send QCOIN from Alice to Bob:
+This checks the local CLI chain:
 
 ```bash
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
+python3 src/qchain.py balance bob
 ```
 
-Check mempools:
-
-```bash
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-mempool 5002
-python3 src/qchain.py node-mempool 5003
-```
-
-Mine the transaction:
-
-```bash
-python3 src/qchain.py node-mine 5002 miner
-```
-
-Check Bob's balance:
+This checks a running node:
 
 ```bash
 python3 src/qchain.py node-balance 5001 bob
-python3 src/qchain.py node-balance 5002 bob
-python3 src/qchain.py node-balance 5003 bob
 ```
 
-Check miner reward:
-
-```bash
-python3 src/qchain.py node-balance 5001 miner
-```
-
-Expected economics for one transaction:
-
-```text
-Alice pays: 10 QCOIN + 2 QCOIN fee
-Bob receives: 10 QCOIN
-Miner receives: 50 QCOIN reward + 2 QCOIN fee
-```
+When testing Docker, use `node-balance`.
 
 ---
 
-# Tests
-
-Run the full test suite:
+## Tests
 
 ```bash
 python3 -m pytest
 ```
 
-or:
-
-```bash
-bash scripts/run_tests.sh
-```
-
-Expected current result:
+Expected result:
 
 ```text
-23 passed
+25 passed
 ```
