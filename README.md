@@ -2,17 +2,17 @@
 
 ![QChain Tests](https://github.com/LYuuss/Q-CHAIN/actions/workflows/tests.yml/badge.svg)
 
-QChain is an experimental Proof-of-Work blockchain built from scratch in Python. The native coin is **QCOIN**.
+QChain is an experimental Proof-of-Work blockchain built from scratch in Python.
+The native coin is **QCOIN**.
 
-QChain is designed as an educational and research-oriented blockchain prototype. Its long-term direction is to explore post-quantum cryptography, useful Proof-of-Work, distributed systems, and privacy mechanisms such as STARKs.
+QChain is designed as an educational and research-oriented blockchain prototype.
+It explores Proof-of-Work, distributed systems, fork handling, persistent node storage, and future post-quantum cryptography directions.
 
 QChain is not production-ready and must not be used with real funds.
 
 ---
 
 ## Current Status
-
-QChain currently supports:
 
 ```text
 Proof-of-Work mining
@@ -26,19 +26,19 @@ replay protection
 mining rewards and transaction fees
 mempool
 fee-aware transaction selection
-persistent chain storage
+persistent main chain storage
+persistent block index
+persistent orphan block pool
+persistent side-branch block pool
 HTTP nodes
 block broadcasting
 transaction broadcasting
-node synchronization
+header-first synchronization
 heaviest-chain rule
 orphan block pool
 side-branch fork management
-automatic reorganization when a side branch becomes heavier
-header-first synchronization
-block lookup by hash
+automatic reorganization
 Docker-based 3-node local testnet
-CLI tools
 pytest test suite
 GitHub Actions CI
 ```
@@ -46,7 +46,43 @@ GitHub Actions CI
 Current test suite:
 
 ```text
-25 tests passing
+31 tests passing
+```
+
+---
+
+## Storage Layer
+
+Each node stores its state in its own data directory.
+
+Example:
+
+```text
+data/nodes/node_5001/
+├── chain.json
+├── peers.json
+├── block_index.json
+├── orphan_blocks.json
+└── side_branch_blocks.json
+```
+
+Meaning:
+
+```text
+chain.json
+    active main chain
+
+peers.json
+    known peers
+
+block_index.json
+    all known blocks by hash
+
+orphan_blocks.json
+    persisted orphan block pool
+
+side_branch_blocks.json
+    persisted side-branch fork pool
 ```
 
 ---
@@ -94,54 +130,21 @@ python3 src/qchain.py node-side-branches 5001
 
 ---
 
-## CLI Commands
-
-Local commands:
-
-```bash
-python3 src/qchain.py status
-python3 src/qchain.py wallets
-python3 src/qchain.py balance alice
-python3 src/qchain.py mine alice
-python3 src/qchain.py send alice bob 10 --fee 2
-python3 src/qchain.py mempool
-python3 src/qchain.py validate
-```
-
-HTTP node commands:
-
-```bash
-python3 src/qchain.py node-status 5001
-python3 src/qchain.py node-balance 5001 bob
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
-python3 src/qchain.py node-headers 5001
-python3 src/qchain.py node-mine 5001 alice
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-python3 src/qchain.py node-sync 5001
-python3 src/qchain.py node-connect 5001 5002
-```
-
----
-
 ## Tests
 
 ```bash
 python3 -m pytest
 ```
 
-Expected current result:
+Expected:
 
 ```text
-25 passed
+31 passed
 ```
 
 ---
 
 ## Documentation
-
-Detailed documentation:
 
 ```text
 docs/core-concepts.md
@@ -154,10 +157,10 @@ docs/docker-testnet.md
 ## Roadmap
 
 ```text
-side-branch persistence
-orphan pool persistence
+persistent mempool
 better reorg diagnostics
 peer discovery
+network protocol improvements
 post-quantum signatures
 ML-DSA integration
 SLH-DSA integration

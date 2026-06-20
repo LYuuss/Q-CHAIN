@@ -33,13 +33,33 @@ bash scripts/connect_docker_nodes.sh
 
 ---
 
+## Node Storage
+
+Docker node data is stored under:
+
+```text
+data/docker/
+```
+
+A node directory can contain:
+
+```text
+chain.json
+peers.json
+block_index.json
+orphan_blocks.json
+side_branch_blocks.json
+```
+
+---
+
 ## Status
 
 ```bash
 bash scripts/status_all.sh
 ```
 
-Or:
+or:
 
 ```bash
 python3 src/qchain.py node-status 5001
@@ -47,118 +67,48 @@ python3 src/qchain.py node-status 5002
 python3 src/qchain.py node-status 5003
 ```
 
-Status includes:
-
-```text
-height
-latest_hash
-cumulative_work
-mempool_size
-orphan_pool_size
-side_branch_pool_size
-peers
-valid
-```
-
 ---
 
-## Mine
-
-```bash
-python3 src/qchain.py node-mine 5001 alice
-```
-
----
-
-## Send Transaction
-
-```bash
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-```
-
----
-
-## Check Mempools
-
-```bash
-bash scripts/mempool_all.sh
-```
-
----
-
-## Mine Transaction
-
-```bash
-python3 src/qchain.py node-mine 5002 miner
-```
-
----
-
-## Check Balances
-
-```bash
-bash scripts/balance_all.sh bob
-bash scripts/balance_all.sh miner
-```
-
----
-
-## Inspect Headers
-
-```bash
-python3 src/qchain.py node-headers 5001
-python3 src/qchain.py node-headers 5002
-python3 src/qchain.py node-headers 5003
-```
-
-Equivalent endpoint:
-
-```text
-GET /headers
-```
-
----
-
-## Inspect Orphan Pools
+## Inspect Persistent Pools
 
 ```bash
 python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-orphans 5002
-python3 src/qchain.py node-orphans 5003
+python3 src/qchain.py node-side-branches 5001
 ```
 
-Equivalent endpoint:
+The orphan pool is stored in:
 
 ```text
-GET /orphans
+orphan_blocks.json
+```
+
+The side-branch pool is stored in:
+
+```text
+side_branch_blocks.json
 ```
 
 ---
 
-## Inspect Side Branches
+## Restart Behavior
 
-```bash
-python3 src/qchain.py node-side-branches 5001
-python3 src/qchain.py node-side-branches 5002
-python3 src/qchain.py node-side-branches 5003
-```
-
-Equivalent endpoint:
+Persistent storage means a node can restart without losing:
 
 ```text
+known blocks
+orphan blocks
+side-branch fork blocks
+```
+
+After restart:
+
+```text
+GET /blocks/<hash>
+GET /orphans
 GET /side-branches
 ```
 
-Normal result:
-
-```json
-{
-  "blocks": [],
-  "max_size": 200,
-  "size": 0,
-  "tip_hashes": []
-}
-```
+still reflect persisted state.
 
 ---
 
@@ -168,59 +118,12 @@ Normal result:
 python3 src/qchain.py node-sync 5001
 ```
 
-The node:
-
-```text
-checks peers
-compares cumulative work
-downloads headers
-validates headers
-finds common ancestor
-downloads only missing blocks
-rebuilds candidate chain
-adopts if heavier
-processes orphans
-processes side branches
-```
-
 If already synchronized:
 
 ```json
 {
   "downloaded_block_count": 0
 }
-```
-
----
-
-## Fork and Reorg Behavior
-
-QChain now distinguishes:
-
-```text
-direct extension:
-    accepted into main chain
-
-missing parent:
-    stored in orphan pool
-
-known parent but not current tip:
-    stored in side-branch pool
-```
-
-If a side branch becomes heavier, QChain can automatically reorganize.
-
-Example:
-
-```text
-current main chain:
-0 -> 1A
-
-side branch:
-0 -> 1B -> 2B
-
-after reorg:
-0 -> 1B -> 2B
 ```
 
 ---
@@ -259,21 +162,7 @@ data/wallets/
 
 ---
 
-## Logs
-
-```bash
-docker compose logs -f
-```
-
-For one node:
-
-```bash
-docker compose logs -f node1
-```
-
----
-
-## Common Docker Issue
+## Docker Networking Note
 
 Inside Docker, `127.0.0.1` means the current container.
 
@@ -284,5 +173,3 @@ http://node1:5000
 http://node2:5000
 http://node3:5000
 ```
-
-The `--advertised-url` option makes each node announce the correct Docker-internal URL.
