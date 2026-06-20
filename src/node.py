@@ -17,6 +17,7 @@ from config import (
     DATA_DIR,
 )
 from transaction import Transaction
+from block_store import BlockStore
 
 MAX_ORPHAN_BLOCKS = 100
 MAX_SIDE_BRANCH_BLOCKS = 200
@@ -134,6 +135,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     chain_path = data_dir / "chain.json"
     peers_path = data_dir / "peers.json"
+    block_store_path = data_dir / "block_index.json"
 
     chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
@@ -141,6 +143,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         storage_path=str(chain_path),
         auto_load=True,
     )
+
+    block_store = BlockStore(block_store_path)
+    block_store.put_many(chain.chain)
 
     peers = load_peers(peers_path)
 
@@ -176,6 +181,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "peers": sorted(peers),
             "advertised_url": get_local_node_url(),
             "storage_path": str(chain_path),
+            "block_store_size": block_store.count(),
+            "block_store_path": str(block_store_path),
         }
 
     def transaction_is_known(transaction: Transaction) -> bool:
@@ -331,11 +338,14 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                         }
                     )
 
+                block_store.put_many(missing_blocks)
                 candidate_chain = chain.chain[: common_index + 1] + missing_blocks
 
                 replaced = chain.replace_chain_if_better(candidate_chain)
 
                 if replaced:
+                    block_store.put_many(chain.chain)
+
                     adopted = True
                     current_work = chain.calculate_cumulative_work()
 
@@ -628,6 +638,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             ), 200
 
         if accepted:
+            block_store.put(block)
             orphan_result = process_orphans()
             side_branch_result = try_adopt_side_branches()
 
@@ -768,6 +779,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             return jsonify({"mined": False, "error": "Mining failed."}), 400
 
         latest_block = chain.latest_block()
+        block_store.put(latest_block)
 
         broadcast_results = broadcast_block(
             block=latest_block,
@@ -854,7 +866,22 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             return True
 
         return block_hash in known_block_hashes()
+    
+    def get_block_location(block_hash: str) -> str:
+        if block_hash in known_block_hashes():
+            return "main_chain"
 
+        if block_hash in orphan_blocks:
+            return "orphan_pool"
+
+        if block_hash in side_branch_blocks:
+            return "side_branch_pool"
+
+        if block_store.has(block_hash):
+            return "block_store"
+
+        return "unknown"
+    
     def block_has_basic_validity(block: Block) -> bool:
         if block.hash != block.compute_hash():
             return False
@@ -898,6 +925,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             del orphan_blocks[oldest_hash]
 
         orphan_blocks[block.hash] = block
+        block_store.put(block)
+
         return True, "Orphan block stored."
 
     def orphan_summary(block: Block) -> dict[str, Any]:
@@ -922,6 +951,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 accepted, message = chain.add_external_block(orphan_block)
 
                 if accepted:
+                    block_store.put(orphan_block)
+
                     del orphan_blocks[orphan_hash]
                     progress = True
 
@@ -1027,6 +1058,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             del side_branch_blocks[oldest_hash]
 
         side_branch_blocks[block.hash] = block
+        block_store.put(block)
+
         return True, "Side-branch block stored."
 
     def get_side_branch_tip_hashes() -> list[str]:
@@ -1118,6 +1151,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             )
 
             if replaced:
+                block_store.put_many(chain.chain)
+
                 removed_count = remove_side_branch_blocks_present_in_main_chain()
 
                 adopted_branches.append(
@@ -1260,23 +1295,17 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 ],
             }
         )
+    
     @app.get("/blocks/<block_hash>")
     def get_block_by_hash(block_hash: str):
-        for block in chain.chain:
-            if block.hash == block_hash:
-                return jsonify(
-                    {
-                        "found": True,
-                        "block": block.to_dict(),
-                    }
-                )
+        block = block_store.get(block_hash)
 
-        if block_hash in orphan_blocks:
+        if block is not None:
             return jsonify(
                 {
                     "found": True,
-                    "orphan": True,
-                    "block": orphan_blocks[block_hash].to_dict(),
+                    "location": get_block_location(block_hash),
+                    "block": block.to_dict(),
                 }
             )
 
