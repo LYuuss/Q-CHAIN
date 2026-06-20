@@ -67,6 +67,34 @@ def save_peers(peers_path: Path, peers: set[str]) -> None:
     with open(peers_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2)
 
+def load_block_pool(pool_path: Path) -> dict[str, Block]:
+    if not pool_path.exists():
+        return {}
+
+    with open(pool_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    blocks = {}
+
+    for block_hash, block_data in data.get("blocks", {}).items():
+        block = Block.from_dict(block_data)
+        blocks[block_hash] = block
+
+    return blocks
+
+
+def save_block_pool(pool_path: Path, blocks: dict[str, Block]) -> None:
+    pool_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = {
+        "blocks": {
+            block_hash: block.to_dict()
+            for block_hash, block in sorted(blocks.items())
+        }
+    }
+
+    with open(pool_path, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2)
 
 def parse_json_body(raw_body: str) -> dict[str, Any] | None:
     try:
@@ -136,6 +164,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     chain_path = data_dir / "chain.json"
     peers_path = data_dir / "peers.json"
     block_store_path = data_dir / "block_index.json"
+    orphan_blocks_path = data_dir / "orphan_blocks.json"
 
     chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
@@ -149,10 +178,15 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     peers = load_peers(peers_path)
 
-    orphan_blocks: dict[str, Block] = {}
+    orphan_blocks = load_block_pool(orphan_blocks_path)
+    block_store.put_many(list(orphan_blocks.values()))
+
     side_branch_blocks: dict[str, Block] = {}
 
     app = Flask(__name__)
+
+    def save_orphan_pool() -> None:
+        save_block_pool(orphan_blocks_path, orphan_blocks)
 
     def get_local_node_url() -> str:
         if advertised_url is not None:
@@ -173,6 +207,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "difficulty_adjustment_interval": chain.difficulty_adjustment_interval,
             "mining_reward": chain.mining_reward,
             "mempool_size": len(chain.mempool),
+            "orphan_blocks_path": str(orphan_blocks_path),
             "orphan_pool_size": len(orphan_blocks),
             "max_orphan_blocks": MAX_ORPHAN_BLOCKS,
             "side_branch_pool_size": len(side_branch_blocks),
@@ -926,7 +961,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         orphan_blocks[block.hash] = block
         block_store.put(block)
-
+        save_orphan_pool()
         return True, "Orphan block stored."
 
     def orphan_summary(block: Block) -> dict[str, Any]:
@@ -943,6 +978,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         attached_blocks = []
         removed_blocks = []
         progress = True
+        orphan_pool_changed = False
 
         while progress:
             progress = False
@@ -954,6 +990,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     block_store.put(orphan_block)
 
                     del orphan_blocks[orphan_hash]
+                    orphan_pool_changed = True
                     progress = True
 
                     broadcast_results = broadcast_block(
@@ -972,6 +1009,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
                 elif message == "Block already known.":
                     del orphan_blocks[orphan_hash]
+                    orphan_pool_changed = True
                     progress = True
 
                     removed_blocks.append(
@@ -985,6 +1023,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     stored, side_branch_message = add_side_branch_block(orphan_block)
 
                     del orphan_blocks[orphan_hash]
+                    orphan_pool_changed = True
                     progress = True
 
                     moved_to_side_branch_blocks.append(
@@ -998,6 +1037,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 
                 elif not can_remain_orphan(orphan_block, message):
                     del orphan_blocks[orphan_hash]
+                    orphan_pool_changed = True
                     progress = True
 
                     removed_blocks.append(
@@ -1007,7 +1047,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                             "reason": message,
                         }
                     )
-
+        if orphan_pool_changed:
+            save_orphan_pool()
         return {
             "attached_count": len(attached_blocks),
             "removed_count": len(removed_blocks),

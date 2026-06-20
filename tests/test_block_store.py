@@ -81,10 +81,12 @@ def test_node_block_lookup_uses_persistent_block_store_for_orphan_after_restart(
     lookup_after_restart = restarted_client.get(f"/blocks/{orphan_block.hash}").get_json()
 
     assert lookup_after_restart["found"] is True
-    assert lookup_after_restart["location"] == "block_store"
+    assert lookup_after_restart["location"] == "orphan_pool"
     assert lookup_after_restart["block"]["hash"] == orphan_block.hash
 
     status_after_restart = restarted_client.get("/status").get_json()
 
     assert status_after_restart["height"] == 0
     assert status_after_restart["block_store_size"] >= 2
+
+    assert status_after_restart["orphan_pool_size"] == 1
