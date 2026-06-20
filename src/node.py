@@ -96,6 +96,35 @@ def save_block_pool(pool_path: Path, blocks: dict[str, Block]) -> None:
     with open(pool_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2)
 
+def load_transaction_pool(pool_path: Path) -> list[Transaction]:
+    if not pool_path.exists():
+        return []
+
+    with open(pool_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    transactions = []
+
+    for tx_data in data.get("transactions", []):
+        transaction = Transaction.from_dict(tx_data)
+        transactions.append(transaction)
+
+    return transactions
+
+
+def save_transaction_pool(pool_path: Path, transactions: list[Transaction]) -> None:
+    pool_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = {
+        "transactions": [
+            transaction.to_dict()
+            for transaction in transactions
+        ]
+    }
+
+    with open(pool_path, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2)
+
 def parse_json_body(raw_body: str) -> dict[str, Any] | None:
     try:
         return json.loads(raw_body)
@@ -166,6 +195,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     block_store_path = data_dir / "block_index.json"
     orphan_blocks_path = data_dir / "orphan_blocks.json"
     side_branch_blocks_path = data_dir / "side_branch_blocks.json"
+    mempool_path = data_dir / "mempool.json"
 
     chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
@@ -185,6 +215,27 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     side_branch_blocks = load_block_pool(side_branch_blocks_path)
     block_store.put_many(list(side_branch_blocks.values()))
 
+    persisted_mempool = load_transaction_pool(mempool_path)
+    chain.mempool = []
+
+    seen_transaction_hashes = set()
+
+    for transaction in persisted_mempool:
+        transaction_hash = transaction.transaction_hash()
+
+        if transaction_hash in seen_transaction_hashes:
+            continue
+
+        if transaction.is_coinbase():
+            continue
+
+        added = chain.add_transaction(transaction)
+
+        if added:
+            seen_transaction_hashes.add(transaction_hash)
+
+    save_transaction_pool(mempool_path, chain.mempool)
+
     app = Flask(__name__)
 
     def save_orphan_pool() -> None:
@@ -192,6 +243,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     def save_side_branch_pool() -> None:
         save_block_pool(side_branch_blocks_path, side_branch_blocks)
+
+    def save_mempool() -> None:
+        save_transaction_pool(mempool_path, chain.mempool)
 
     def get_local_node_url() -> str:
         if advertised_url is not None:
@@ -211,6 +265,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "target_block_time": chain.target_block_time,
             "difficulty_adjustment_interval": chain.difficulty_adjustment_interval,
             "mining_reward": chain.mining_reward,
+            "mempool_path": str(mempool_path),
             "mempool_size": len(chain.mempool),
             "orphan_blocks_path": str(orphan_blocks_path),
             "orphan_pool_size": len(orphan_blocks),
@@ -386,6 +441,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
                 if replaced:
                     block_store.put_many(chain.chain)
+                    save_mempool()
 
                     adopted = True
                     current_work = chain.calculate_cumulative_work()
@@ -621,6 +677,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "error": "Transaction rejected.",
                 }
             ), 400
+        
+        save_mempool()
 
         broadcast_results = broadcast_transaction(
             transaction=transaction,
@@ -680,6 +738,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         if accepted:
             block_store.put(block)
+            save_mempool()
+
             orphan_result = process_orphans()
             side_branch_result = try_adopt_side_branches()
 
@@ -821,6 +881,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         latest_block = chain.latest_block()
         block_store.put(latest_block)
+        save_mempool()
 
         broadcast_results = broadcast_block(
             block=latest_block,
@@ -985,6 +1046,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         removed_blocks = []
         progress = True
         orphan_pool_changed = False
+        mempool_changed = False
 
         while progress:
             progress = False
@@ -994,6 +1056,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
                 if accepted:
                     block_store.put(orphan_block)
+                    mempool_changed = True
 
                     del orphan_blocks[orphan_hash]
                     orphan_pool_changed = True
@@ -1055,6 +1118,10 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     )
         if orphan_pool_changed:
             save_orphan_pool()
+
+        if mempool_changed:
+            save_mempool()
+
         return {
             "attached_count": len(attached_blocks),
             "removed_count": len(removed_blocks),
@@ -1211,6 +1278,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
             if replaced:
                 block_store.put_many(chain.chain)
+                save_mempool()
 
                 removed_count = remove_side_branch_blocks_present_in_main_chain()
 
