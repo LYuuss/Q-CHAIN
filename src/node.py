@@ -297,6 +297,123 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         return False
 
+    def transaction_hashes_from_blocks(blocks: list[Block]) -> set[str]:
+        transaction_hashes = set()
+
+        for block in blocks:
+            for tx_data in block.transactions:
+                transaction = Transaction.from_dict(tx_data)
+
+                if transaction.is_coinbase():
+                    continue
+
+                transaction_hashes.add(transaction.transaction_hash())
+
+        return transaction_hashes
+
+    def collect_disconnected_transactions(
+        old_chain: list[Block],
+        new_chain: list[Block],
+    ) -> list[Transaction]:
+        new_block_hashes = {
+            block.hash
+            for block in new_chain
+        }
+
+        new_transaction_hashes = transaction_hashes_from_blocks(new_chain)
+
+        disconnected_transactions = []
+        seen_transaction_hashes = set()
+
+        for old_block in old_chain:
+            if old_block.hash in new_block_hashes:
+                continue
+
+            for tx_data in old_block.transactions:
+                transaction = Transaction.from_dict(tx_data)
+
+                if transaction.is_coinbase():
+                    continue
+
+                transaction_hash = transaction.transaction_hash()
+
+                if transaction_hash in new_transaction_hashes:
+                    continue
+
+                if transaction_hash in seen_transaction_hashes:
+                    continue
+
+                seen_transaction_hashes.add(transaction_hash)
+                disconnected_transactions.append(transaction)
+
+        return disconnected_transactions
+
+    def recover_mempool_after_reorg(
+        old_chain: list[Block],
+        new_chain: list[Block],
+    ) -> dict[str, Any]:
+        disconnected_transactions = collect_disconnected_transactions(
+            old_chain=old_chain,
+            new_chain=new_chain,
+        )
+
+        recovered_transactions = []
+        rejected_transactions = []
+        skipped_transactions = []
+
+        for transaction in disconnected_transactions:
+            transaction_hash = transaction.transaction_hash()
+
+            if transaction_is_known(transaction):
+                skipped_transactions.append(
+                    {
+                        "hash": transaction_hash,
+                        "sender": transaction.sender,
+                        "receiver": transaction.receiver,
+                        "amount": transaction.amount,
+                        "fee": transaction.fee,
+                        "reason": "Transaction already known in current chain or mempool.",
+                    }
+                )
+                continue
+
+            added = chain.add_transaction(transaction)
+
+            if added:
+                recovered_transactions.append(
+                    {
+                        "hash": transaction_hash,
+                        "sender": transaction.sender,
+                        "receiver": transaction.receiver,
+                        "amount": transaction.amount,
+                        "fee": transaction.fee,
+                    }
+                )
+            else:
+                rejected_transactions.append(
+                    {
+                        "hash": transaction_hash,
+                        "sender": transaction.sender,
+                        "receiver": transaction.receiver,
+                        "amount": transaction.amount,
+                        "fee": transaction.fee,
+                        "reason": "Transaction is no longer valid after reorg.",
+                    }
+                )
+
+        save_mempool()
+
+        return {
+            "candidate_count": len(disconnected_transactions),
+            "recovered_count": len(recovered_transactions),
+            "rejected_count": len(rejected_transactions),
+            "skipped_count": len(skipped_transactions),
+            "recovered_transactions": recovered_transactions,
+            "rejected_transactions": rejected_transactions,
+            "skipped_transactions": skipped_transactions,
+            "mempool_size": len(chain.mempool),
+        }
+
     def get_sorted_peers_by_work() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         peer_statuses = []
         errors = []
@@ -336,6 +453,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         checked_peers = []
         errors = []
         downloaded_blocks = []
+        mempool_recovery_results = []
 
         peer_statuses, status_errors = get_sorted_peers_by_work()
         errors.extend(status_errors)
@@ -437,11 +555,24 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 block_store.put_many(missing_blocks)
                 candidate_chain = chain.chain[: common_index + 1] + missing_blocks
 
+                old_chain = list(chain.chain)
+
                 replaced = chain.replace_chain_if_better(candidate_chain)
 
                 if replaced:
                     block_store.put_many(chain.chain)
-                    save_mempool()
+
+                    mempool_recovery_result = recover_mempool_after_reorg(
+                        old_chain=old_chain,
+                        new_chain=chain.chain,
+                    )
+
+                    mempool_recovery_results.append(
+                        {
+                            "peer": peer,
+                            "result": mempool_recovery_result,
+                        }
+                    )
 
                     adopted = True
                     current_work = chain.calculate_cumulative_work()
@@ -465,6 +596,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "peer_statuses": peer_statuses,
             "downloaded_blocks": downloaded_blocks,
             "downloaded_block_count": len(downloaded_blocks),
+            "mempool_recovery_results": mempool_recovery_results,
             "orphan_result": orphan_result,
             "errors": errors,
         }
@@ -1258,10 +1390,12 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 )
                 continue
 
+            old_chain = list(chain.chain)
             old_height = len(chain.chain) - 1
             old_latest_hash = chain.latest_block().hash
 
             replaced = chain.replace_chain_if_better(candidate_chain)
+            mempool_recovery_result = None
 
             checked_branches.append(
                 {
@@ -1273,12 +1407,17 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     "old_latest_hash": old_latest_hash,
                     "new_height": len(chain.chain) - 1,
                     "new_latest_hash": chain.latest_block().hash,
+                    "mempool_recovery_result": mempool_recovery_result,
                 }
             )
 
             if replaced:
                 block_store.put_many(chain.chain)
-                save_mempool()
+
+                mempool_recovery_result = recover_mempool_after_reorg(
+                    old_chain=old_chain,
+                    new_chain=chain.chain,
+                )
 
                 removed_count = remove_side_branch_blocks_present_in_main_chain()
 
@@ -1290,6 +1429,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                         "old_latest_hash": old_latest_hash,
                         "new_latest_hash": chain.latest_block().hash,
                         "removed_side_branch_blocks": removed_count,
+                        "mempool_recovery_result": mempool_recovery_result,
                     }
                 )
 
