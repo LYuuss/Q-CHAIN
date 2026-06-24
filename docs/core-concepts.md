@@ -1,63 +1,14 @@
 # QChain Core Concepts
 
-QChain is an experimental Proof-of-Work blockchain built from scratch in Python.
+QChain now includes persistent storage for known blocks, orphan blocks, side branches, and mempool transactions.
 
-It implements blocks, headers, Merkle roots, wallets, signed transactions, a mempool, transaction fees, dynamic difficulty adjustment, persistent block storage, orphan blocks, side-branch fork management, automatic reorganization, header-first synchronization, and the heaviest-chain rule.
-
----
-
-## Block Structure
+Current test suite:
 
 ```text
-Block
-├── header
-│   ├── index
-│   ├── previous_hash
-│   ├── merkle_root
-│   ├── difficulty
-│   ├── timestamp
-│   └── nonce
-├── hash
-└── transactions
+34 tests passing
 ```
 
-The block hash is computed from the header. Transactions are summarized through the Merkle root.
-
----
-
-## Proof of Work
-
-A miner must find a nonce such that the block hash starts with a number of zeroes.
-
-```text
-difficulty = 4
-valid hash = 0000a93f...
-```
-
----
-
-## Transactions
-
-A transaction contains:
-
-```text
-sender
-receiver
-amount
-nonce
-fee
-signature
-```
-
-The sender pays `amount + fee`, the receiver gets `amount`, and the miner gets the block reward plus fees.
-
----
-
-# Persistent Storage Layer
-
-QChain separates the active chain from the broader set of known blocks.
-
-A node can store:
+Persistent files used by a node:
 
 ```text
 chain.json
@@ -65,126 +16,72 @@ peers.json
 block_index.json
 orphan_blocks.json
 side_branch_blocks.json
+mempool.json
 ```
+
 
 ---
 
-## chain.json
+## Persistent Mempool
 
-`chain.json` stores the active main chain selected by the heaviest-chain rule.
+The mempool stores valid pending transactions before they are mined.
+
+QChain persists it in:
+
+```text
+mempool.json
+```
+
+This allows pending transactions to survive node restarts. When transactions are mined, they are removed from both the in-memory mempool and `mempool.json`.
 
 ---
 
-## block_index.json
+## Reorg Mempool Recovery
 
-`block_index.json` stores all known blocks by hash.
+A reorganization happens when a node replaces its current main chain with a heavier competing branch.
 
-It can include:
-
-```text
-main chain blocks
-orphan blocks
-side-branch blocks
-blocks downloaded during sync
-```
-
-This allows:
+Example:
 
 ```text
-GET /blocks/<hash>
+old main chain:
+0 -> 1 -> 2A
+
+new heavier chain:
+0 -> 1 -> 2B -> 3B
 ```
 
-to return known blocks even if they are not part of the current main chain.
+If block `2A` contained a normal transaction that is not present in the new chain, that transaction is no longer confirmed.
+
+QChain now attempts to recover such transactions into the mempool.
 
 ---
 
-## orphan_blocks.json
+## Recovery Rules
 
-An orphan block is a block whose parent is missing locally.
-
-```text
-local node knows:
-0 -> 1
-
-node receives:
-block 3
-
-but block 2 is missing
-```
-
-QChain stores this in `orphan_blocks.json`.
-
-Endpoint:
+A transaction from a disconnected block is recovered only if:
 
 ```text
-GET /orphans
+it is not a coinbase transaction
+it is not already included in the new main chain
+it is not already in the mempool
+it is still valid after the reorg
 ```
 
-CLI:
-
-```bash
-python3 src/qchain.py node-orphans 5001
-```
-
-After restart, the node reloads the orphan pool and can still attach the orphan if its parent arrives later.
+Coinbase transactions are ignored because mining rewards from disconnected blocks are not valid anymore.
 
 ---
 
-## side_branch_blocks.json
-
-A side branch is a valid competing branch whose parent is known, but which does not extend the current main chain tip.
+## Recovery Process
 
 ```text
-main chain:
-0 -> 1A -> 2A
-
-side branch:
-0 -> 1B
-```
-
-QChain stores this in `side_branch_blocks.json`.
-
-Endpoint:
-
-```text
-GET /side-branches
-```
-
-CLI:
-
-```bash
-python3 src/qchain.py node-side-branches 5001
-```
-
-After restart, the node reloads side branches and can still perform a reorg if the branch becomes heavier.
-
----
-
-## Automatic Reorganization
-
-A reorg happens when a side branch becomes better than the current main chain.
-
-```text
-current main chain:
-0 -> 1A
-
-side branch:
-0 -> 1B -> 2B
-```
-
-If the side branch has more cumulative work, QChain can adopt it.
-
-Process:
-
-```text
-find side-branch tip
-walk backward through side-branch blocks
-find common ancestor
-build candidate chain
-validate candidate chain
-compare cumulative work
-adopt if better
-remove adopted side-branch blocks from side_branch_blocks.json
+save the old chain before reorg
+adopt the heavier candidate chain
+scan disconnected old blocks
+collect non-coinbase transactions
+remove transactions already present in the new chain
+validate each transaction against the new state
+reinsert valid transactions into the mempool
+persist mempool.json
 ```
 
 ---
@@ -196,10 +93,10 @@ direct extension:
     accepted into main chain
 
 missing parent:
-    stored as orphan
+    stored in orphan_blocks.json
 
 known parent but not current tip:
-    stored as side branch
+    stored in side_branch_blocks.json
 ```
 
 ---
@@ -216,16 +113,5 @@ rebuild candidate chain
 adopt if heavier
 process orphan blocks
 process side branches
+recover mempool transactions after reorg
 ```
-
-If already synchronized:
-
-```text
-downloaded_block_count = 0
-```
-
----
-
-## Security Warning
-
-QChain is experimental software. Do not use it with real funds.
