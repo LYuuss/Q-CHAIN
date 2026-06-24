@@ -18,6 +18,7 @@ from config import (
 )
 from transaction import Transaction
 from block_store import BlockStore
+from transaction_index import TransactionIndex
 
 MAX_ORPHAN_BLOCKS = 100
 MAX_SIDE_BRANCH_BLOCKS = 200
@@ -196,6 +197,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     orphan_blocks_path = data_dir / "orphan_blocks.json"
     side_branch_blocks_path = data_dir / "side_branch_blocks.json"
     mempool_path = data_dir / "mempool.json"
+    transaction_index_path = data_dir / "tx_index.json"
 
     chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
@@ -206,6 +208,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     block_store = BlockStore(block_store_path)
     block_store.put_many(chain.chain)
+
+    transaction_index = TransactionIndex(transaction_index_path)
+    transaction_index.rebuild_from_chain(chain.chain)
 
     peers = load_peers(peers_path)
 
@@ -237,6 +242,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     save_transaction_pool(mempool_path, chain.mempool)
 
     app = Flask(__name__)
+
+    def refresh_transaction_index() -> None:
+        transaction_index.rebuild_from_chain(chain.chain)
 
     def save_orphan_pool() -> None:
         save_block_pool(orphan_blocks_path, orphan_blocks)
@@ -279,6 +287,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             "storage_path": str(chain_path),
             "block_store_size": block_store.count(),
             "block_store_path": str(block_store_path),
+            "transaction_index_size": transaction_index.count(),
+            "transaction_index_path": str(transaction_index_path),
         }
 
     def transaction_is_known(transaction: Transaction) -> bool:
@@ -310,6 +320,55 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 transaction_hashes.add(transaction.transaction_hash())
 
         return transaction_hashes
+
+    def find_transaction_in_mempool(tx_hash: str) -> dict[str, Any] | None:
+        for transaction in chain.mempool:
+            current_hash = transaction.transaction_hash()
+
+            if current_hash == tx_hash:
+                return {
+                    "hash": current_hash,
+                    "location": "mempool",
+                    "sender": transaction.sender_address(),
+                    "receiver": transaction.receiver,
+                    "amount": transaction.amount,
+                    "fee": transaction.fee,
+                    "nonce": transaction.nonce,
+                    "is_coinbase": transaction.is_coinbase(),
+                    "transaction": transaction.to_dict(),
+                }
+
+        return None
+
+    def pending_transactions_for_address(address: str) -> list[dict[str, Any]]:
+        results = []
+
+        for position, transaction in enumerate(chain.mempool):
+            sender_address = transaction.sender_address()
+
+            if sender_address != address and transaction.receiver != address:
+                continue
+
+            tx_hash = transaction.transaction_hash()
+
+            results.append(
+                {
+                    "hash": tx_hash,
+                    "location": "mempool",
+                    "block_hash": None,
+                    "block_index": None,
+                    "position": position,
+                    "sender": transaction.sender_address(),
+                    "receiver": transaction.receiver,
+                    "amount": transaction.amount,
+                    "fee": transaction.fee,
+                    "nonce": transaction.nonce,
+                    "is_coinbase": transaction.is_coinbase(),
+                    "transaction": transaction.to_dict(),
+                }
+            )
+
+        return results
 
     def collect_disconnected_transactions(
         old_chain: list[Block],
@@ -561,6 +620,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
                 if replaced:
                     block_store.put_many(chain.chain)
+                    refresh_transaction_index()
 
                     mempool_recovery_result = recover_mempool_after_reorg(
                         old_chain=old_chain,
@@ -711,6 +771,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "mempool_endpoint": "/mempool",
                 "blocks_endpoint": "/blocks",
                 "block_by_hash_endpoint": "/blocks/<hash>",
+                "transaction_by_hash_endpoint": "/transactions/<hash>",
+                "address_transactions_endpoint": "/addresses/<address>/transactions",
                 "transactions_endpoint": "/transactions",
                 "orphans_endpoint": "/orphans",
                 "side_branches_endpoint": "/side-branches",
@@ -757,6 +819,53 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             }
         )
 
+    @app.get("/transactions/<tx_hash>")
+    def get_transaction_by_hash(tx_hash: str):
+        pending_transaction = find_transaction_in_mempool(tx_hash)
+
+        if pending_transaction is not None:
+            return jsonify(
+                {
+                    "found": True,
+                    "transaction": pending_transaction,
+                }
+            )
+
+        indexed_transaction = transaction_index.get(tx_hash)
+
+        if indexed_transaction is not None:
+            return jsonify(
+                {
+                    "found": True,
+                    "transaction": indexed_transaction,
+                }
+            )
+
+        return jsonify(
+            {
+                "found": False,
+                "hash": tx_hash,
+                "error": "Transaction not found.",
+            }
+        ), 404
+
+    @app.get("/addresses/<address>/transactions")
+    def get_address_transactions(address: str):
+        confirmed_transactions = transaction_index.find_by_address(address)
+        pending_transactions = pending_transactions_for_address(address)
+
+        transactions = confirmed_transactions + pending_transactions
+
+        return jsonify(
+            {
+                "address": address,
+                "count": len(transactions),
+                "confirmed_count": len(confirmed_transactions),
+                "pending_count": len(pending_transactions),
+                "transactions": transactions,
+            }
+        )
+    
     @app.post("/transactions")
     def add_transaction():
         payload = request.get_json(silent=True)
@@ -871,6 +980,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         if accepted:
             block_store.put(block)
             save_mempool()
+            refresh_transaction_index()
 
             orphan_result = process_orphans()
             side_branch_result = try_adopt_side_branches()
@@ -1014,6 +1124,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         latest_block = chain.latest_block()
         block_store.put(latest_block)
         save_mempool()
+        refresh_transaction_index()
 
         broadcast_results = broadcast_block(
             block=latest_block,
@@ -1188,6 +1299,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
                 if accepted:
                     block_store.put(orphan_block)
+                    refresh_transaction_index()
                     mempool_changed = True
 
                     del orphan_blocks[orphan_hash]
@@ -1413,6 +1525,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
             if replaced:
                 block_store.put_many(chain.chain)
+                refresh_transaction_index()
 
                 mempool_recovery_result = recover_mempool_after_reorg(
                     old_chain=old_chain,

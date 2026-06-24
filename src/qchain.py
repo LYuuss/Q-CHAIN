@@ -709,12 +709,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     node_side_branches_parser.add_argument("node", help="Node port or URL, example: 5001")
     node_side_branches_parser.set_defaults(func=command_node_side_branches)
+
+    node_transaction_parser = subparsers.add_parser(
+        "node-transaction",
+        help="Show a transaction by hash from an HTTP node",
+    )
+    node_transaction_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_transaction_parser.add_argument("transaction_hash", help="Transaction hash")
+    node_transaction_parser.set_defaults(func=command_node_transaction)
+
+    node_address_transactions_parser = subparsers.add_parser(
+        "node-address-transactions",
+        help="Show transaction history for an address from an HTTP node",
+    )
+    node_address_transactions_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_address_transactions_parser.add_argument("address", help="Address to inspect")
+    node_address_transactions_parser.set_defaults(func=command_node_address_transactions)
     
     return parser
 
 def command_node_side_branches(args) -> None:
     node_url = normalize_node_url(args.node)
     response = fetch_json(f"{node_url}/side-branches")
+    print_json(response)
+
+def command_node_transaction(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/transactions/{args.transaction_hash}")
+    print_json(response)
+
+
+def command_node_address_transactions(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/addresses/{args.address}/transactions")
     print_json(response)
 
 def main() -> None:
