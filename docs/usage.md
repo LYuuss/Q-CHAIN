@@ -1,85 +1,88 @@
 # QChain Usage Guide
 
-## Node Status
+This guide focuses on the transaction index and mini block explorer commands.
+
+---
+
+## Transaction Lookup
+
+Use:
 
 ```bash
-python3 src/qchain.py node-status 5001
+python3 src/qchain.py node-transaction 5001 <tx_hash>
 ```
 
-Status includes:
+Equivalent endpoint:
 
 ```text
-height
-latest_hash
-genesis_hash
-cumulative_work
-mempool_size
-orphan_pool_size
-side_branch_pool_size
-block_store_size
-mempool_path
-block_store_path
-orphan_blocks_path
-side_branch_blocks_path
-valid
+GET /transactions/<tx_hash>
 ```
 
----
-
-## Node Mempool
-
-```bash
-python3 src/qchain.py node-mempool 5001
-```
-
-The mempool is persisted in:
+The result can be:
 
 ```text
-mempool.json
+location = mempool
+location = confirmed
+404 if unknown
 ```
-
-Pending transactions survive node restart and are removed after mining.
 
 ---
 
-## Node Sync
+## Address Transaction History
+
+Use:
 
 ```bash
-python3 src/qchain.py node-sync 5001
+python3 src/qchain.py node-address-transactions 5001 <address>
 ```
 
-If a sync triggers a reorg, QChain can recover disconnected transactions into the mempool.
-
-The sync response can include:
+Equivalent endpoint:
 
 ```text
-mempool_recovery_results
+GET /addresses/<address>/transactions
+```
+
+The response includes:
+
+```text
+count
+confirmed_count
+pending_count
+transactions
 ```
 
 ---
 
-## Inspect Fork State
-
-```bash
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
-```
-
----
-
-## Complete Example
+## Example Workflow
 
 ```bash
 bash scripts/start_docker_testnet.sh
 
+python3 src/qchain.py wallet-create alice
+python3 src/qchain.py wallet-create bob
+python3 src/qchain.py wallet-create miner
+
 python3 src/qchain.py node-mine 5001 alice
 python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-python3 src/qchain.py node-mine 5002 miner
-
 python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-status 5001
-python3 src/qchain.py node-side-branches 5001
+python3 src/qchain.py node-mine 5002 miner
+python3 src/qchain.py node-address-transactions 5001 <bob_address>
 ```
+
+---
+
+## Persistent Files
+
+Transaction-related files:
+
+```text
+mempool.json
+tx_index.json
+```
+
+`mempool.json` stores pending transactions.
+
+`tx_index.json` stores confirmed transaction metadata from the active main chain.
 
 ---
 
@@ -92,5 +95,5 @@ python3 -m pytest
 Expected:
 
 ```text
-34 passed
+37 passed
 ```

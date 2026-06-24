@@ -5,7 +5,7 @@
 QChain is an experimental Proof-of-Work blockchain built from scratch in Python.  
 The native coin is **QCOIN**.
 
-QChain is an educational and research-oriented prototype exploring Proof-of-Work, distributed systems, persistent node storage, fork handling, reorg behavior, and future post-quantum cryptography directions.
+QChain is an educational and research-oriented prototype exploring Proof-of-Work, distributed systems, persistent node storage, fork handling, reorg behavior, mempool recovery, and transaction indexing.
 
 QChain is not production-ready and must not be used with real funds.
 
@@ -26,25 +26,30 @@ persistent mempool
 persistent block index
 persistent orphan pool
 persistent side-branch pool
+persistent transaction index
 HTTP nodes
 header-first synchronization
 heaviest-chain rule
 side-branch fork management
 automatic reorganization
 mempool transaction recovery after reorg
+transaction lookup by hash
+address transaction history
 Docker-based 3-node local testnet
 GitHub Actions CI
 ```
 
-QChain now includes persistent storage for known blocks, orphan blocks, side branches, and mempool transactions.
-
 Current test suite:
 
 ```text
-34 tests passing
+37 tests passing
 ```
 
-Persistent files used by a node:
+---
+
+## Persistent Node Storage
+
+Each node stores its state in its own data directory.
 
 ```text
 chain.json
@@ -53,29 +58,53 @@ block_index.json
 orphan_blocks.json
 side_branch_blocks.json
 mempool.json
+tx_index.json
 ```
 
+Meaning:
+
+```text
+chain.json
+    active main chain
+
+block_index.json
+    all known blocks by hash
+
+orphan_blocks.json
+    persisted orphan block pool
+
+side_branch_blocks.json
+    persisted side-branch fork pool
+
+mempool.json
+    persisted pending transactions
+
+tx_index.json
+    persisted confirmed transaction index
+```
 
 ---
 
-## Reorg Mempool Recovery
+## Transaction Index
 
-When QChain reorganizes from an old main chain to a heavier side chain, transactions from disconnected old-chain blocks can become unconfirmed.
+QChain now includes a persistent transaction index.
 
-QChain now tries to recover those transactions into the mempool when they are:
-
-```text
-non-coinbase
-not included in the new main chain
-not already in the mempool
-still valid after the reorg
-```
-
-The recovered mempool is saved to:
+It allows the node to answer:
 
 ```text
-mempool.json
+GET /transactions/<tx_hash>
+GET /addresses/<address>/transactions
 ```
+
+The transaction lookup can return:
+
+```text
+confirmed transaction from tx_index.json
+pending transaction from the mempool
+404 if unknown
+```
+
+The address history endpoint returns both confirmed and pending transactions related to an address.
 
 ---
 
@@ -86,6 +115,8 @@ GET  /status
 GET  /chain
 GET  /headers
 GET  /blocks/<hash>
+GET  /transactions/<tx_hash>
+GET  /addresses/<address>/transactions
 GET  /mempool
 GET  /orphans
 GET  /side-branches
@@ -101,23 +132,16 @@ POST /sync
 
 ---
 
-## Quick Start
+## Useful CLI Commands
 
 ```bash
-python3 src/qchain.py wallet-create alice
-python3 src/qchain.py wallet-create bob
-python3 src/qchain.py wallet-create miner
-
-bash scripts/start_docker_testnet.sh
-
-python3 src/qchain.py node-mine 5001 alice
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-python3 src/qchain.py node-mine 5002 miner
-
 python3 src/qchain.py node-status 5001
 python3 src/qchain.py node-mempool 5001
 python3 src/qchain.py node-orphans 5001
 python3 src/qchain.py node-side-branches 5001
+python3 src/qchain.py node-headers 5001
+python3 src/qchain.py node-transaction 5001 <tx_hash>
+python3 src/qchain.py node-address-transactions 5001 <address>
 ```
 
 ---
@@ -131,5 +155,22 @@ python3 -m pytest
 Expected:
 
 ```text
-34 passed
+37 passed
+```
+
+---
+
+## Roadmap
+
+```text
+better explorer output
+transaction index after deeper reorg scenarios
+peer discovery
+network protocol improvements
+post-quantum signatures
+ML-DSA integration
+SLH-DSA integration
+useful Proof-of-Work research
+STARK-based privacy layer
+whitepaper
 ```

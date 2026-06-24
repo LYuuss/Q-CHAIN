@@ -8,25 +8,11 @@ node2 -> http://127.0.0.1:5002
 node3 -> http://127.0.0.1:5003
 ```
 
-Inside Docker, nodes communicate through:
-
-```text
-http://node1:5000
-http://node2:5000
-http://node3:5000
-```
-
 ---
 
 ## Persistent Node Files
 
-Docker node data is stored under:
-
-```text
-data/docker/
-```
-
-Each node can persist:
+Each Docker node can persist:
 
 ```text
 chain.json
@@ -35,31 +21,65 @@ block_index.json
 orphan_blocks.json
 side_branch_blocks.json
 mempool.json
+tx_index.json
+```
+
+---
+
+## Inspect Transaction State
+
+Pending transactions:
+
+```bash
+python3 src/qchain.py node-mempool 5001
+```
+
+Transaction by hash:
+
+```bash
+python3 src/qchain.py node-transaction 5001 <tx_hash>
+```
+
+Address history:
+
+```bash
+python3 src/qchain.py node-address-transactions 5001 <address>
 ```
 
 ---
 
 ## Restart Behavior
 
-Persistent storage means a node can restart without losing:
+After restart, QChain keeps:
 
 ```text
 known blocks
 orphan blocks
-side-branch fork blocks
-pending mempool transactions
+side-branch blocks
+pending transactions
+confirmed transaction index
+```
+
+So these remain usable:
+
+```text
+GET /blocks/<hash>
+GET /mempool
+GET /transactions/<tx_hash>
+GET /addresses/<address>/transactions
+GET /orphans
+GET /side-branches
 ```
 
 ---
 
-## Reorg Mempool Recovery
+## Reorg Behavior
 
-If a side branch becomes the main chain, QChain can recover valid non-coinbase transactions from disconnected old-chain blocks into the mempool.
-
-The recovered mempool is persisted to:
+If a side branch becomes the main chain:
 
 ```text
-mempool.json
+tx_index.json is rebuilt from the new main chain
+valid disconnected transactions can return to mempool.json
 ```
 
 ---
@@ -70,9 +90,10 @@ mempool.json
 bash scripts/start_docker_testnet.sh
 bash scripts/status_all.sh
 
+python3 src/qchain.py node-status 5001
 python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
+python3 src/qchain.py node-transaction 5001 <tx_hash>
+python3 src/qchain.py node-address-transactions 5001 <address>
 python3 src/qchain.py node-sync 5001
 ```
 
@@ -82,10 +103,4 @@ python3 src/qchain.py node-sync 5001
 
 ```bash
 bash scripts/stop_docker_testnet.sh
-```
-
-or:
-
-```bash
-docker compose down
 ```
