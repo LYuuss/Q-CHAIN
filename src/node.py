@@ -19,6 +19,7 @@ from config import (
 from transaction import Transaction
 from block_store import BlockStore
 from transaction_index import TransactionIndex
+from storage_utils import atomic_write_json, read_json_or_default
 
 MAX_ORPHAN_BLOCKS = 100
 MAX_SIDE_BRANCH_BLOCKS = 200
@@ -49,31 +50,30 @@ def normalize_peer_url(url: str) -> str:
 
 
 def load_peers(peers_path: Path) -> set[str]:
-    if not peers_path.exists():
-        return set()
-
-    with open(peers_path, "r", encoding="utf-8") as file:
-        data = json.load(file)
+    data = read_json_or_default(
+        peers_path,
+        default={
+            "peers": [],
+        },
+    )
 
     return set(data.get("peers", []))
 
 
 def save_peers(peers_path: Path, peers: set[str]) -> None:
-    peers_path.parent.mkdir(parents=True, exist_ok=True)
-
     data = {
         "peers": sorted(peers),
     }
 
-    with open(peers_path, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2)
+    atomic_write_json(peers_path, data)
 
 def load_block_pool(pool_path: Path) -> dict[str, Block]:
-    if not pool_path.exists():
-        return {}
-
-    with open(pool_path, "r", encoding="utf-8") as file:
-        data = json.load(file)
+    data = read_json_or_default(
+        pool_path,
+        default={
+            "blocks": {},
+        },
+    )
 
     blocks = {}
 
@@ -85,8 +85,6 @@ def load_block_pool(pool_path: Path) -> dict[str, Block]:
 
 
 def save_block_pool(pool_path: Path, blocks: dict[str, Block]) -> None:
-    pool_path.parent.mkdir(parents=True, exist_ok=True)
-
     data = {
         "blocks": {
             block_hash: block.to_dict()
@@ -94,15 +92,15 @@ def save_block_pool(pool_path: Path, blocks: dict[str, Block]) -> None:
         }
     }
 
-    with open(pool_path, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2)
+    atomic_write_json(pool_path, data)
 
 def load_transaction_pool(pool_path: Path) -> list[Transaction]:
-    if not pool_path.exists():
-        return []
-
-    with open(pool_path, "r", encoding="utf-8") as file:
-        data = json.load(file)
+    data = read_json_or_default(
+        pool_path,
+        default={
+            "transactions": [],
+        },
+    )
 
     transactions = []
 
@@ -112,10 +110,7 @@ def load_transaction_pool(pool_path: Path) -> list[Transaction]:
 
     return transactions
 
-
 def save_transaction_pool(pool_path: Path, transactions: list[Transaction]) -> None:
-    pool_path.parent.mkdir(parents=True, exist_ok=True)
-
     data = {
         "transactions": [
             transaction.to_dict()
@@ -123,8 +118,7 @@ def save_transaction_pool(pool_path: Path, transactions: list[Transaction]) -> N
         ]
     }
 
-    with open(pool_path, "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2)
+    atomic_write_json(pool_path, data)
 
 def parse_json_body(raw_body: str) -> dict[str, Any] | None:
     try:

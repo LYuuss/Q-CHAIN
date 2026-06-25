@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from block import Block
-
+from storage_utils import atomic_write_json, read_json_or_default
 
 class BlockStore:
     def __init__(self, storage_path: str | Path):
@@ -15,8 +15,12 @@ class BlockStore:
             self.save()
             return
 
-        with open(self.storage_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = read_json_or_default(
+            self.storage_path,
+            default={
+                "blocks": {},
+            },
+        )
 
         self.blocks = {}
 
@@ -25,8 +29,6 @@ class BlockStore:
             self.blocks[block.hash] = block
 
     def save(self) -> None:
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-
         data = {
             "blocks": {
                 block_hash: block.to_dict()
@@ -34,8 +36,7 @@ class BlockStore:
             }
         }
 
-        with open(self.storage_path, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2)
+        atomic_write_json(self.storage_path, data)
 
     def put(self, block: Block, save: bool = True) -> None:
         self.blocks[block.hash] = block
