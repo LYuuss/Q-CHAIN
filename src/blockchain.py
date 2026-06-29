@@ -1,6 +1,6 @@
-import json
 import os
 
+from storage_utils import atomic_write_json, read_json_or_default
 from block import Block
 from transaction import Transaction
 from config import (
@@ -66,11 +66,6 @@ class Blockchain:
         return self.nonces.get(address, 0) + 1
 
     def save_to_disk(self) -> None:
-        directory = os.path.dirname(self.storage_path)
-
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-
         data = {
             "difficulty": self.difficulty,
             "initial_difficulty": self.initial_difficulty,
@@ -83,12 +78,23 @@ class Blockchain:
             "mempool": [tx.to_dict() for tx in self.mempool],
         }
 
-        with open(self.storage_path, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2)
+        atomic_write_json(self.storage_path, data)
 
     def load_from_disk(self) -> None:
-        with open(self.storage_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = read_json_or_default(
+            self.storage_path,
+            default={
+                "difficulty": self.difficulty,
+                "initial_difficulty": self.initial_difficulty,
+                "mining_reward": self.mining_reward,
+                "target_block_time": self.target_block_time,
+                "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
+                "min_difficulty": self.min_difficulty,
+                "max_difficulty": self.max_difficulty,
+                "chain": [],
+                "mempool": [],
+            },
+        )
 
         self.difficulty = data.get("difficulty", self.difficulty)
 
