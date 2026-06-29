@@ -1,45 +1,96 @@
 # QChain Usage Guide
 
-This guide focuses on the transaction index and mini block explorer commands.
+This guide focuses on the safer storage layer and persisted node state.
+
+---
+
+## Run Tests
+
+```bash
+python3 -m pytest
+```
+
+Expected:
+
+```text
+46 passed
+```
+
+---
+
+## Inspect Node Status
+
+```bash
+python3 src/qchain.py node-status 5001
+```
+
+Status can include:
+
+```text
+storage_path
+block_store_path
+orphan_blocks_path
+side_branch_blocks_path
+mempool_path
+transaction_index_path
+block_store_size
+orphan_pool_size
+side_branch_pool_size
+mempool_size
+transaction_index_size
+```
+
+---
+
+## Persistent Files
+
+```text
+chain.json
+peers.json
+block_index.json
+orphan_blocks.json
+side_branch_blocks.json
+mempool.json
+tx_index.json
+```
+
+These files are written through safer JSON storage helpers.
+
+---
+
+## Useful Commands
+
+```bash
+python3 src/qchain.py node-status 5001
+python3 src/qchain.py node-mempool 5001
+python3 src/qchain.py node-orphans 5001
+python3 src/qchain.py node-side-branches 5001
+python3 src/qchain.py node-transaction 5001 <tx_hash>
+python3 src/qchain.py node-address-transactions 5001 <address>
+python3 src/qchain.py node-sync 5001
+```
 
 ---
 
 ## Transaction Lookup
 
-Use:
-
 ```bash
 python3 src/qchain.py node-transaction 5001 <tx_hash>
 ```
 
-Equivalent endpoint:
+The node checks:
 
 ```text
-GET /transactions/<tx_hash>
-```
-
-The result can be:
-
-```text
-location = mempool
-location = confirmed
-404 if unknown
+mempool first
+tx_index.json second
 ```
 
 ---
 
-## Address Transaction History
-
-Use:
+## Address History
 
 ```bash
 python3 src/qchain.py node-address-transactions 5001 <address>
-```
-
-Equivalent endpoint:
-
-```text
-GET /addresses/<address>/transactions
 ```
 
 The response includes:
@@ -49,51 +100,4 @@ count
 confirmed_count
 pending_count
 transactions
-```
-
----
-
-## Example Workflow
-
-```bash
-bash scripts/start_docker_testnet.sh
-
-python3 src/qchain.py wallet-create alice
-python3 src/qchain.py wallet-create bob
-python3 src/qchain.py wallet-create miner
-
-python3 src/qchain.py node-mine 5001 alice
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-mine 5002 miner
-python3 src/qchain.py node-address-transactions 5001 <bob_address>
-```
-
----
-
-## Persistent Files
-
-Transaction-related files:
-
-```text
-mempool.json
-tx_index.json
-```
-
-`mempool.json` stores pending transactions.
-
-`tx_index.json` stores confirmed transaction metadata from the active main chain.
-
----
-
-## Tests
-
-```bash
-python3 -m pytest
-```
-
-Expected:
-
-```text
-37 passed
 ```

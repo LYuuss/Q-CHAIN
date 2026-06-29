@@ -5,7 +5,7 @@
 QChain is an experimental Proof-of-Work blockchain built from scratch in Python.  
 The native coin is **QCOIN**.
 
-QChain is an educational and research-oriented prototype exploring Proof-of-Work, distributed systems, persistent node storage, fork handling, reorg behavior, mempool recovery, and transaction indexing.
+QChain explores Proof-of-Work, distributed systems, persistent node storage, fork handling, reorg behavior, mempool recovery, transaction indexing, and safer local JSON storage.
 
 QChain is not production-ready and must not be used with real funds.
 
@@ -27,6 +27,8 @@ persistent block index
 persistent orphan pool
 persistent side-branch pool
 persistent transaction index
+atomic JSON storage
+safe JSON reads
 HTTP nodes
 header-first synchronization
 heaviest-chain rule
@@ -42,14 +44,12 @@ GitHub Actions CI
 Current test suite:
 
 ```text
-37 tests passing
+46 tests passing
 ```
 
 ---
 
 ## Persistent Node Storage
-
-Each node stores its state in its own data directory.
 
 ```text
 chain.json
@@ -61,54 +61,38 @@ mempool.json
 tx_index.json
 ```
 
-Meaning:
+---
+
+## Atomic JSON Storage
+
+QChain uses safer JSON storage utilities:
+
+```text
+atomic_write_json(path, data)
+read_json_or_default(path, default)
+```
+
+`atomic_write_json` writes to a temporary file first, flushes it, then replaces the target file atomically.
+
+This avoids leaving a partially written JSON file if the node is interrupted during a save.
+
+`read_json_or_default` safely loads JSON and returns a default value when the file is missing or malformed.
+
+Protected files:
 
 ```text
 chain.json
-    active main chain
-
+peers.json
 block_index.json
-    all known blocks by hash
-
 orphan_blocks.json
-    persisted orphan block pool
-
 side_branch_blocks.json
-    persisted side-branch fork pool
-
 mempool.json
-    persisted pending transactions
-
 tx_index.json
-    persisted confirmed transaction index
 ```
 
 ---
 
-## Transaction Index
-
-QChain now includes a persistent transaction index.
-
-It allows the node to answer:
-
-```text
-GET /transactions/<tx_hash>
-GET /addresses/<address>/transactions
-```
-
-The transaction lookup can return:
-
-```text
-confirmed transaction from tx_index.json
-pending transaction from the mempool
-404 if unknown
-```
-
-The address history endpoint returns both confirmed and pending transactions related to an address.
-
----
-
-## Useful Node Endpoints
+## Useful Endpoints
 
 ```text
 GET  /status
@@ -132,20 +116,6 @@ POST /sync
 
 ---
 
-## Useful CLI Commands
-
-```bash
-python3 src/qchain.py node-status 5001
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
-python3 src/qchain.py node-headers 5001
-python3 src/qchain.py node-transaction 5001 <tx_hash>
-python3 src/qchain.py node-address-transactions 5001 <address>
-```
-
----
-
 ## Tests
 
 ```bash
@@ -155,7 +125,7 @@ python3 -m pytest
 Expected:
 
 ```text
-37 passed
+46 passed
 ```
 
 ---
@@ -163,14 +133,11 @@ Expected:
 ## Roadmap
 
 ```text
-better explorer output
-transaction index after deeper reorg scenarios
+atomic wallet storage
 peer discovery
+better explorer output
 network protocol improvements
 post-quantum signatures
-ML-DSA integration
-SLH-DSA integration
 useful Proof-of-Work research
-STARK-based privacy layer
 whitepaper
 ```

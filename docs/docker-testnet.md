@@ -8,11 +8,25 @@ node2 -> http://127.0.0.1:5002
 node3 -> http://127.0.0.1:5003
 ```
 
+Inside Docker, nodes communicate through:
+
+```text
+http://node1:5000
+http://node2:5000
+http://node3:5000
+```
+
 ---
 
 ## Persistent Node Files
 
-Each Docker node can persist:
+Docker node data is stored under:
+
+```text
+data/docker/
+```
+
+Each node can persist:
 
 ```text
 chain.json
@@ -24,63 +38,15 @@ mempool.json
 tx_index.json
 ```
 
----
-
-## Inspect Transaction State
-
-Pending transactions:
-
-```bash
-python3 src/qchain.py node-mempool 5001
-```
-
-Transaction by hash:
-
-```bash
-python3 src/qchain.py node-transaction 5001 <tx_hash>
-```
-
-Address history:
-
-```bash
-python3 src/qchain.py node-address-transactions 5001 <address>
-```
+These files are protected by safer JSON storage utilities.
 
 ---
 
-## Restart Behavior
+## Atomic Storage Behavior
 
-After restart, QChain keeps:
+QChain writes critical JSON files using a temporary file and atomic replacement.
 
-```text
-known blocks
-orphan blocks
-side-branch blocks
-pending transactions
-confirmed transaction index
-```
-
-So these remain usable:
-
-```text
-GET /blocks/<hash>
-GET /mempool
-GET /transactions/<tx_hash>
-GET /addresses/<address>/transactions
-GET /orphans
-GET /side-branches
-```
-
----
-
-## Reorg Behavior
-
-If a side branch becomes the main chain:
-
-```text
-tx_index.json is rebuilt from the new main chain
-valid disconnected transactions can return to mempool.json
-```
+This protects against partially written files when a node is interrupted during save operations.
 
 ---
 
@@ -103,4 +69,18 @@ python3 src/qchain.py node-sync 5001
 
 ```bash
 bash scripts/stop_docker_testnet.sh
+```
+
+or:
+
+```bash
+docker compose down
+```
+
+---
+
+## Reset
+
+```bash
+bash scripts/reset_docker_testnet.sh
 ```

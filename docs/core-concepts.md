@@ -1,12 +1,48 @@
 # QChain Core Concepts
 
-QChain implements Proof-of-Work blocks, signed transactions, persistent node storage, mempool recovery, fork handling, and a persistent transaction index.
+QChain implements Proof-of-Work blocks, signed transactions, persistent node storage, fork handling, mempool recovery, transaction indexing, and safer atomic JSON storage.
 
 ---
 
-## Persistent Storage Layer
+## Atomic JSON Writes
 
-A node can store:
+Writing JSON directly with `json.dump(...)` can leave a corrupted file if the process stops during the write.
+
+QChain now writes to a temporary file first, then replaces the target file atomically.
+
+Conceptually:
+
+```text
+1. write data to a temporary file in the same directory
+2. flush the file
+3. fsync the file descriptor
+4. atomically replace the target file
+5. fsync the parent directory when possible
+```
+
+This means a persisted file should be either the previous complete version or the new complete version, not a half-written file.
+
+---
+
+## Safe JSON Reads
+
+QChain provides:
+
+```text
+read_json_or_default(path, default)
+```
+
+It returns the provided default when:
+
+```text
+the file does not exist
+the file contains malformed JSON
+the loaded value is not a JSON object
+```
+
+---
+
+## Protected Files
 
 ```text
 chain.json
@@ -20,116 +56,41 @@ tx_index.json
 
 ---
 
-## Transaction Index
+## chain.json
 
-The transaction index is stored in:
+`chain.json` is the most critical file because it stores the active blockchain state.
 
-```text
-tx_index.json
-```
-
-It maps transaction hashes to confirmed transaction metadata.
-
-Each indexed transaction contains:
+It includes:
 
 ```text
-hash
-location
-block_hash
-block_index
-position
-sender
-receiver
-amount
-fee
-nonce
-is_coinbase
-transaction
+difficulty
+initial_difficulty
+mining_reward
+target_block_time
+difficulty_adjustment_interval
+min_difficulty
+max_difficulty
+chain
+mempool
 ```
 
-The index is rebuilt from the active main chain whenever the main chain changes.
+QChain now writes this file atomically.
+
+If the file is missing or malformed, the node can fall back to a safe default and recreate a valid genesis chain.
+
+If the file is valid JSON but contains an invalid blockchain, QChain rejects it.
 
 ---
 
-## Confirmed vs Pending Transactions
+## Reorg Consistency
 
-QChain distinguishes:
-
-```text
-confirmed transaction:
-    included in the active main chain
-    indexed in tx_index.json
-
-pending transaction:
-    currently in the mempool
-    stored in mempool.json
-```
-
-`GET /transactions/<tx_hash>` first checks the mempool, then the persistent transaction index.
-
-This means a transaction can be found whether it is still pending or already confirmed.
-
----
-
-## Address Transaction History
-
-QChain can list transactions related to a given address.
-
-Endpoint:
+After a reorg:
 
 ```text
-GET /addresses/<address>/transactions
-```
-
-The response includes:
-
-```text
-confirmed_count
-pending_count
-transactions
-```
-
-This creates a first mini block-explorer layer.
-
----
-
-## Reorg and Transaction Index
-
-When a reorg happens, QChain replaces the active main chain with a heavier chain.
-
-After the reorg:
-
-```text
+the active chain is replaced if the candidate has higher cumulative work
 tx_index.json is rebuilt from the new main chain
-transactions from disconnected old blocks can be recovered into the mempool
-mempool.json is persisted
-```
-
-This keeps confirmed transaction lookup consistent with the selected main chain.
-
----
-
-## Mempool Recovery
-
-During a reorg, transactions from disconnected blocks are recovered only if:
-
-```text
-they are not coinbase transactions
-they are not already included in the new main chain
-they are not already in the mempool
-they are still valid after the reorg
-```
-
----
-
-## Useful Endpoints
-
-```text
-GET /transactions/<tx_hash>
-GET /addresses/<address>/transactions
-GET /mempool
-GET /blocks/<hash>
-GET /status
+valid transactions from disconnected blocks can return to mempool.json
+affected JSON files are saved through safer storage helpers
 ```
 
 ---
