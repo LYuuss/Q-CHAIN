@@ -8,14 +8,6 @@ node2 -> http://127.0.0.1:5002
 node3 -> http://127.0.0.1:5003
 ```
 
-Inside Docker, nodes communicate through:
-
-```text
-http://node1:5000
-http://node2:5000
-http://node3:5000
-```
-
 ---
 
 ## Persistent Node Files
@@ -38,15 +30,19 @@ mempool.json
 tx_index.json
 ```
 
-These files are protected by safer JSON storage utilities.
-
 ---
 
-## Atomic Storage Behavior
+## Wallet Files
 
-QChain writes critical JSON files using a temporary file and atomic replacement.
+Wallet files are stored outside the Docker node state by default:
 
-This protects against partially written files when a node is interrupted during save operations.
+```text
+data/wallets/*.json
+```
+
+Wallet files are also written atomically.
+
+This protects encrypted keystore JSON files from partial writes.
 
 ---
 
@@ -56,6 +52,7 @@ This protects against partially written files when a node is interrupted during 
 bash scripts/start_docker_testnet.sh
 bash scripts/status_all.sh
 
+python3 src/qchain.py wallet-create alice
 python3 src/qchain.py node-status 5001
 python3 src/qchain.py node-mempool 5001
 python3 src/qchain.py node-transaction 5001 <tx_hash>
@@ -65,22 +62,20 @@ python3 src/qchain.py node-sync 5001
 
 ---
 
-## Stop
-
-```bash
-bash scripts/stop_docker_testnet.sh
-```
-
-or:
-
-```bash
-docker compose down
-```
-
----
-
 ## Reset
 
 ```bash
 bash scripts/reset_docker_testnet.sh
+```
+
+This removes Docker node state under:
+
+```text
+data/docker/
+```
+
+It does not delete wallets stored under:
+
+```text
+data/wallets/
 ```

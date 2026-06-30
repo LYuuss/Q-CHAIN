@@ -28,6 +28,7 @@ persistent orphan pool
 persistent side-branch pool
 persistent transaction index
 atomic JSON storage
+atomic wallet storage
 safe JSON reads
 HTTP nodes
 header-first synchronization
@@ -44,12 +45,14 @@ GitHub Actions CI
 Current test suite:
 
 ```text
-46 tests passing
+50 tests passing
 ```
 
 ---
 
-## Persistent Node Storage
+## Persistent Storage
+
+Node files:
 
 ```text
 chain.json
@@ -61,24 +64,27 @@ mempool.json
 tx_index.json
 ```
 
----
-
-## Atomic JSON Storage
-
-QChain uses safer JSON storage utilities:
+Wallet files:
 
 ```text
-atomic_write_json(path, data)
-read_json_or_default(path, default)
+data/wallets/*.json
 ```
 
-`atomic_write_json` writes to a temporary file first, flushes it, then replaces the target file atomically.
+---
 
-This avoids leaving a partially written JSON file if the node is interrupted during a save.
+## Atomic Wallet Storage
 
-`read_json_or_default` safely loads JSON and returns a default value when the file is missing or malformed.
+Wallet files are now written atomically.
 
-Protected files:
+This protects encrypted wallet files from being left in a corrupted half-written state during save operations.
+
+QChain does not silently recreate an empty wallet when a wallet file is missing or invalid. Instead, wallet loading fails explicitly.
+
+This is intentional because wallet files may contain encrypted private keys and must not be replaced silently.
+
+---
+
+## Protected Files
 
 ```text
 chain.json
@@ -88,30 +94,7 @@ orphan_blocks.json
 side_branch_blocks.json
 mempool.json
 tx_index.json
-```
-
----
-
-## Useful Endpoints
-
-```text
-GET  /status
-GET  /chain
-GET  /headers
-GET  /blocks/<hash>
-GET  /transactions/<tx_hash>
-GET  /addresses/<address>/transactions
-GET  /mempool
-GET  /orphans
-GET  /side-branches
-GET  /balances/<address>
-GET  /peers
-
-POST /transactions
-POST /blocks
-POST /mine
-POST /peers
-POST /sync
+data/wallets/*.json
 ```
 
 ---
@@ -125,7 +108,7 @@ python3 -m pytest
 Expected:
 
 ```text
-46 passed
+50 passed
 ```
 
 ---
@@ -133,7 +116,6 @@ Expected:
 ## Roadmap
 
 ```text
-atomic wallet storage
 peer discovery
 better explorer output
 network protocol improvements

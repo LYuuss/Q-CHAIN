@@ -1,6 +1,6 @@
 # QChain Usage Guide
 
-This guide focuses on the safer storage layer and persisted node state.
+This guide focuses on safer wallet and storage behavior.
 
 ---
 
@@ -13,91 +13,46 @@ python3 -m pytest
 Expected:
 
 ```text
-46 passed
+50 passed
 ```
 
 ---
 
-## Inspect Node Status
+## Wallet Creation
 
 ```bash
-python3 src/qchain.py node-status 5001
+python3 src/qchain.py wallet-create alice
 ```
 
-Status can include:
+Wallet files are stored under:
 
 ```text
-storage_path
-block_store_path
-orphan_blocks_path
-side_branch_blocks_path
-mempool_path
-transaction_index_path
-block_store_size
-orphan_pool_size
-side_branch_pool_size
-mempool_size
-transaction_index_size
+data/wallets/
 ```
+
+Wallet JSON files are now written atomically.
 
 ---
 
-## Persistent Files
+## Wallet Loading
 
-```text
-chain.json
-peers.json
-block_index.json
-orphan_blocks.json
-side_branch_blocks.json
-mempool.json
-tx_index.json
-```
+Wallet loading rejects missing or invalid wallet JSON.
 
-These files are written through safer JSON storage helpers.
+This is intentional.
+
+A corrupted wallet file should not be silently replaced by a new wallet because it may contain an encrypted private key.
 
 ---
 
 ## Useful Commands
 
 ```bash
+python3 src/qchain.py wallet-create alice
+python3 src/qchain.py wallets
+
 python3 src/qchain.py node-status 5001
 python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
 python3 src/qchain.py node-transaction 5001 <tx_hash>
 python3 src/qchain.py node-address-transactions 5001 <address>
 python3 src/qchain.py node-sync 5001
-```
-
----
-
-## Transaction Lookup
-
-```bash
-python3 src/qchain.py node-transaction 5001 <tx_hash>
-```
-
-The node checks:
-
-```text
-mempool first
-tx_index.json second
-```
-
----
-
-## Address History
-
-```bash
-python3 src/qchain.py node-address-transactions 5001 <address>
-```
-
-The response includes:
-
-```text
-count
-confirmed_count
-pending_count
-transactions
 ```

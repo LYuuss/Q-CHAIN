@@ -4,45 +4,67 @@ QChain implements Proof-of-Work blocks, signed transactions, persistent node sto
 
 ---
 
-## Atomic JSON Writes
-
-Writing JSON directly with `json.dump(...)` can leave a corrupted file if the process stops during the write.
-
-QChain now writes to a temporary file first, then replaces the target file atomically.
-
-Conceptually:
-
-```text
-1. write data to a temporary file in the same directory
-2. flush the file
-3. fsync the file descriptor
-4. atomically replace the target file
-5. fsync the parent directory when possible
-```
-
-This means a persisted file should be either the previous complete version or the new complete version, not a half-written file.
-
----
-
-## Safe JSON Reads
+## Atomic JSON Storage
 
 QChain provides:
 
 ```text
+atomic_write_json(path, data)
 read_json_or_default(path, default)
 ```
 
-It returns the provided default when:
+`atomic_write_json` writes JSON data to a temporary file first, flushes it, then atomically replaces the target file.
+
+This avoids leaving partially written JSON files if the process is interrupted during save operations.
+
+---
+
+## Atomic Wallet Storage
+
+Wallet files are critical because they can contain encrypted private keys.
+
+They are stored under:
 
 ```text
-the file does not exist
-the file contains malformed JSON
-the loaded value is not a JSON object
+data/wallets/*.json
+```
+
+Wallet saving now uses atomic JSON writes.
+
+Wallet loading uses safe JSON reads, but invalid wallet files are rejected explicitly.
+
+This prevents dangerous behavior such as:
+
+```text
+silently replacing a corrupted wallet
+creating a new wallet when an old encrypted wallet is unreadable
+masking a broken keystore
 ```
 
 ---
 
-## Protected Files
+## Wallet File Behavior
+
+When saving:
+
+```text
+QChain encrypts the private key
+builds the wallet JSON object
+writes it through atomic_write_json
+```
+
+When loading:
+
+```text
+QChain reads the wallet JSON safely
+rejects missing or malformed wallet data
+decrypts the private key only with the correct password
+checks that the address matches the loaded keys
+```
+
+---
+
+## Protected Storage Files
 
 ```text
 chain.json
@@ -52,45 +74,7 @@ orphan_blocks.json
 side_branch_blocks.json
 mempool.json
 tx_index.json
-```
-
----
-
-## chain.json
-
-`chain.json` is the most critical file because it stores the active blockchain state.
-
-It includes:
-
-```text
-difficulty
-initial_difficulty
-mining_reward
-target_block_time
-difficulty_adjustment_interval
-min_difficulty
-max_difficulty
-chain
-mempool
-```
-
-QChain now writes this file atomically.
-
-If the file is missing or malformed, the node can fall back to a safe default and recreate a valid genesis chain.
-
-If the file is valid JSON but contains an invalid blockchain, QChain rejects it.
-
----
-
-## Reorg Consistency
-
-After a reorg:
-
-```text
-the active chain is replaced if the candidate has higher cumulative work
-tx_index.json is rebuilt from the new main chain
-valid transactions from disconnected blocks can return to mempool.json
-affected JSON files are saved through safer storage helpers
+data/wallets/*.json
 ```
 
 ---
