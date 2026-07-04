@@ -2,8 +2,10 @@ import argparse
 import json
 import urllib.error
 import urllib.request
+import requests
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from flask import Flask, jsonify, request
 
@@ -181,6 +183,36 @@ def should_trigger_sync(message: str) -> bool:
         or "run sync" in lower_message
     )
 
+def normalize_peer_url(peer_url: str) -> str | None:
+    if not isinstance(peer_url, str):
+        return None
+
+    peer_url = peer_url.strip().rstrip("/")
+
+    if not peer_url:
+        return None
+
+    parsed = urlparse(peer_url)
+
+    if parsed.scheme not in {"http", "https"}:
+        return None
+
+    if not parsed.netloc:
+        return None
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def extract_peer_url(payload: dict) -> str | None:
+    peer_url = payload.get("peer")
+
+    if peer_url is None:
+        peer_url = payload.get("url")
+
+    if peer_url is None:
+        peer_url = payload.get("peer_url")
+
+    return normalize_peer_url(peer_url)
 
 def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +238,18 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     transaction_index = TransactionIndex(transaction_index_path)
     transaction_index.rebuild_from_chain(chain.chain)
 
-    peers = load_peers(peers_path)
+    normalized_advertised_url = normalize_peer_url(advertised_url)
+
+    loaded_peers = load_peers(peers_path)
+
+    peers = {
+        normalized_peer
+        for peer in loaded_peers
+        if (normalized_peer := normalize_peer_url(peer)) is not None
+        and normalized_peer != normalized_advertised_url
+    }
+
+    save_peers(peers_path, peers)
 
     orphan_blocks = load_block_pool(orphan_blocks_path)
     block_store.put_many(list(orphan_blocks.values()))
@@ -236,6 +279,23 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     save_transaction_pool(mempool_path, chain.mempool)
 
     app = Flask(__name__)
+
+    def add_peer(peer_url: str) -> tuple[bool, str, str | None]:
+        normalized_peer = normalize_peer_url(peer_url)
+
+        if normalized_peer is None:
+            return False, "Invalid peer URL.", None
+
+        if normalized_peer == normalized_advertised_url:
+            return False, "Cannot add self as peer.", normalized_peer
+
+        if normalized_peer in peers:
+            return False, "Peer already known.", normalized_peer
+
+        peers.add(normalized_peer)
+        save_peers(peers_path, peers)
+
+        return True, "Peer added.", normalized_peer
 
     def refresh_transaction_index() -> None:
         transaction_index.rebuild_from_chain(chain.chain)
@@ -771,6 +831,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "orphans_endpoint": "/orphans",
                 "side_branches_endpoint": "/side-branches",
                 "advertised_url": get_local_node_url(),
+                "peers_endpoint": "/peers",
+                "peer_discovery_endpoint": "/peers/discover",
             }
         )
 
@@ -1150,48 +1212,105 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     def get_peers():
         return jsonify(
             {
-                "peers": sorted(peers),
                 "count": len(peers),
-                "advertised_url": get_local_node_url(),
+                "peers": sorted(peers),
             }
         )
 
     @app.post("/peers")
-    def add_peer():
-        payload = request.get_json(silent=True)
+    def add_peer_endpoint():
+        payload = request.get_json(silent=True) or {}
 
-        if payload is None:
-            return jsonify({"error": "Missing JSON body."}), 400
+        peer_url = extract_peer_url(payload)
 
-        url = payload.get("url")
-
-        if not url:
-            return jsonify({"error": "Missing peer url."}), 400
-
-        peer_url = normalize_peer_url(url)
-
-        if peer_url == get_local_node_url():
+        if peer_url is None:
             return jsonify(
                 {
                     "added": False,
-                    "message": "Refusing to add self as peer.",
-                    "peer": peer_url,
-                    "peers": sorted(peers),
-                    "advertised_url": get_local_node_url(),
+                    "error": "Missing or invalid peer URL.",
                 }
-            ), 200
+            ), 400
 
-        peers.add(peer_url)
-        save_peers(peers_path, peers)
+        added, message, normalized_peer = add_peer(peer_url)
+
+        status_code = 201 if added else 200
+
+        if not added and message in {"Invalid peer URL.", "Cannot add self as peer."}:
+            status_code = 400
 
         return jsonify(
             {
-                "added": True,
-                "peer": peer_url,
+                "added": added,
+                "message": message,
+                "peer": normalized_peer,
+                "count": len(peers),
                 "peers": sorted(peers),
-                "advertised_url": get_local_node_url(),
             }
-        ), 201
+        ), status_code
+
+    @app.post("/peers/discover")
+    def discover_peers():
+        discovered_peers = []
+        skipped_peers = []
+        failed_peers = []
+
+        current_peers = sorted(peers)
+
+        for peer in current_peers:
+            try:
+                response = requests.get(
+                    f"{peer}/peers",
+                    timeout=3,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            except requests.RequestException as error:
+                failed_peers.append(
+                    {
+                        "peer": peer,
+                        "error": str(error),
+                    }
+                )
+                continue
+
+            remote_peers = data.get("peers", [])
+
+            if not isinstance(remote_peers, list):
+                skipped_peers.append(
+                    {
+                        "peer": peer,
+                        "reason": "Remote peer list is invalid.",
+                    }
+                )
+                continue
+
+            for remote_peer in remote_peers:
+                added, message, normalized_peer = add_peer(remote_peer)
+
+                result = {
+                    "source_peer": peer,
+                    "peer": normalized_peer,
+                    "message": message,
+                }
+
+                if added:
+                    discovered_peers.append(result)
+                else:
+                    skipped_peers.append(result)
+
+        return jsonify(
+            {
+                "discovered_count": len(discovered_peers),
+                "skipped_count": len(skipped_peers),
+                "failed_count": len(failed_peers),
+                "discovered_peers": discovered_peers,
+                "skipped_peers": skipped_peers,
+                "failed_peers": failed_peers,
+                "count": len(peers),
+                "peers": sorted(peers),
+            }
+        )
 
     @app.post("/sync")
     def sync():

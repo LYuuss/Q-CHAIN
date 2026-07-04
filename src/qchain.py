@@ -3,6 +3,7 @@ import getpass
 import json
 import urllib.error
 import urllib.request
+import requests
 from typing import Any
 
 from blockchain import Blockchain
@@ -725,6 +726,16 @@ def build_parser() -> argparse.ArgumentParser:
     node_address_transactions_parser.add_argument("node", help="Node port or URL, example: 5001")
     node_address_transactions_parser.add_argument("address", help="Address to inspect")
     node_address_transactions_parser.set_defaults(func=command_node_address_transactions)
+
+    node_discover_peers_parser = subparsers.add_parser(
+        "node-discover-peers",
+        help="Discover peers known by this node's current peers",
+    )
+    node_discover_peers_parser.add_argument(
+        "node",
+        help="Node port or URL, example: 5001",
+    )
+    node_discover_peers_parser.set_defaults(func=command_node_discover_peers)
     
     return parser
 
@@ -743,6 +754,17 @@ def command_node_address_transactions(args) -> None:
     node_url = normalize_node_url(args.node)
     response = fetch_json(f"{node_url}/addresses/{args.address}/transactions")
     print_json(response)
+
+def command_node_discover_peers(args) -> None:
+    node_url = normalize_node_url(args.node)
+
+    response = requests.post(
+        f"{node_url}/peers/discover",
+        timeout=10,
+    )
+
+    response.raise_for_status()
+    print_json(response.json())
 
 def main() -> None:
     parser = build_parser()
