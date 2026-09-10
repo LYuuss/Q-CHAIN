@@ -1,7 +1,11 @@
-__pycache__/
-*.pyc
-data/
-.git/
-.venv/
-venv/
+.git
+.venv
+venv
+__pycache__
+.pytest_cache
+data
+*.zip
+tests
+docs
 .DS_Store
+*.pyc

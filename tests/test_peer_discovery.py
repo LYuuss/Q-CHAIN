@@ -4,19 +4,6 @@ import node
 from node import create_app
 
 
-class FakeResponse:
-    def __init__(self, payload, status_code=200):
-        self.payload = payload
-        self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise node.requests.HTTPError(f"HTTP {self.status_code}")
-
-    def json(self):
-        return self.payload
-
-
 def test_node_rejects_self_peer(tmp_path):
     app = create_app(
         data_dir=tmp_path / "node1",
@@ -94,7 +81,7 @@ def test_peer_discovery_imports_remote_peers(tmp_path, monkeypatch):
         assert timeout == 3
 
         if url == "http://node2:5000/peers":
-            return FakeResponse(
+            return (
                 {
                     "count": 1,
                     "peers": [
@@ -105,7 +92,7 @@ def test_peer_discovery_imports_remote_peers(tmp_path, monkeypatch):
 
         raise AssertionError(f"Unexpected URL: {url}")
 
-    monkeypatch.setattr(node.requests, "get", fake_get)
+    monkeypatch.setattr(node, "fetch_json", fake_get)
 
     discover_response = client.post("/peers/discover")
 
@@ -134,7 +121,7 @@ def test_peer_discovery_skips_invalid_remote_peer_urls(tmp_path, monkeypatch):
     )
 
     def fake_get(url, timeout):
-        return FakeResponse(
+        return (
             {
                 "peers": [
                     "not-a-url",
@@ -144,7 +131,7 @@ def test_peer_discovery_skips_invalid_remote_peer_urls(tmp_path, monkeypatch):
             }
         )
 
-    monkeypatch.setattr(node.requests, "get", fake_get)
+    monkeypatch.setattr(node, "fetch_json", fake_get)
 
     discover_response = client.post("/peers/discover")
 
@@ -175,7 +162,7 @@ def test_peer_discovery_persists_new_peers(tmp_path, monkeypatch):
     )
 
     def fake_get(url, timeout):
-        return FakeResponse(
+        return (
             {
                 "peers": [
                     "http://node3:5000",
@@ -183,7 +170,7 @@ def test_peer_discovery_persists_new_peers(tmp_path, monkeypatch):
             }
         )
 
-    monkeypatch.setattr(node.requests, "get", fake_get)
+    monkeypatch.setattr(node, "fetch_json", fake_get)
 
     client.post("/peers/discover")
 

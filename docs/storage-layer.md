@@ -1,205 +1,84 @@
-# QChain Storage Layer
-
-QChain uses persistent JSON files to keep node and wallet state across restarts.
-
----
-
-## Node Storage Files
-
-```text
-chain.json
-peers.json
-block_index.json
-orphan_blocks.json
-side_branch_blocks.json
-mempool.json
-tx_index.json
-```
-
----
-
-## Wallet Storage Files
-
-```text
-data/wallets/*.json
-```
-
-Wallet files contain encrypted private key material and metadata.
-
----
-
-## Atomic JSON Writes
-
-QChain uses:
-
-```text
-atomic_write_json(path, data)
-```
-
-This helper:
-
-```text
-creates the parent directory
-writes JSON to a temporary file
-flushes the file
-fsyncs the file
-replaces the target file with os.replace
-fsyncs the parent directory when possible
-```
-
-This helps ensure files are not left half-written.
-
----
-
-## Safe JSON Reads
-
-QChain uses:
-
-```text
-read_json_or_default(path, default)
-```
-
-This helper returns the default when:
-
-```text
-the file does not exist
-the file contains invalid JSON
-the loaded object is not a dictionary
-```
-
----
-
-## chain.json
-
-Stores the active blockchain state.
-
-Includes:
-
-```text
-difficulty
-initial_difficulty
-mining_reward
-target_block_time
-difficulty_adjustment_interval
-min_difficulty
-max_difficulty
-chain
-mempool
-```
-
-If `chain.json` is missing or malformed, QChain can recreate a valid genesis chain.
-
-If it is valid JSON but contains an invalid blockchain, QChain rejects it.
-
----
-
-## peers.json
-
-Stores known peers.
-
-Used for:
-
-```text
-broadcasting
-sync
-peer persistence after restart
-```
-
----
-
-## block_index.json
-
-Stores all known blocks by hash.
-
-Can include:
-
-```text
-main-chain blocks
-orphan blocks
-side-branch blocks
-downloaded sync blocks
-```
-
----
-
-## orphan_blocks.json
-
-Stores orphan blocks whose parents are currently unknown.
-
----
-
-## side_branch_blocks.json
-
-Stores valid competing fork blocks.
-
-These blocks may later become part of a heavier chain.
-
----
-
-## mempool.json
-
-Stores valid pending transactions.
-
-The node reloads and revalidates pending transactions on startup.
-
-Invalid, duplicate, or coinbase transactions are not kept.
-
----
-
-## tx_index.json
-
-Stores confirmed transaction metadata from the active main chain.
-
-It is rebuilt when the main chain changes.
-
-Used for:
-
-```text
-GET /transactions/<tx_hash>
-GET /addresses/<address>/transactions
-```
-
----
-
-## data/wallets/*.json
-
-Stores encrypted wallet files.
-
-Wallet loading behavior is intentionally strict:
-
-```text
-missing wallet file -> error
-invalid wallet JSON -> error
-wrong password -> error
-address/key mismatch -> error
-```
-
-QChain does not silently replace invalid wallet files.
-
----
-
-## Reorg Storage Effects
-
-When a reorg happens:
-
-```text
-chain.json is updated
-tx_index.json is rebuilt
-mempool.json is updated with recovered transactions
-block_index.json keeps known blocks
-side_branch_blocks.json is cleaned when needed
-orphan_blocks.json may be processed if parents arrive
-```
-
----
-
-## Recommended Debugging Commands
+# Storage and recovery
+
+Each node owns a directory. The local CLI uses `data/chain.json`; standalone
+nodes default to `data/nodes/node_<port>/`; Docker nodes use `data/docker/nodeN/`
+on the host. `QCHAIN_DATA_DIR` changes the default root. Runtime files and wallets
+are ignored by Git.
+
+## Files and authority
+
+| File | Contents and startup behavior |
+| --- | --- |
+| `chain.json` | Authoritative active chain, consensus parameters, and mempool. Validated before use. |
+| `mempool.json` | Compatibility/inspection mirror. Regenerated from `chain.json`; never overrides its current mempool. |
+| `block_index.json` | Known blocks keyed by hash. Structurally damaged entries are skipped; active blocks are reinserted. |
+| `tx_index.json` | Confirmed transaction metadata. Rebuilt from the active chain at startup and after chain changes. |
+| `orphan_blocks.json` | Pending blocks with missing parents, subject to the orphan pool limit. |
+| `side_branch_blocks.json` | Competing blocks, including recently disconnected main-chain blocks. |
+| `peers.json` | Normalized configured/discovered peers; invalid URLs and advertised self URLs are removed. |
+| `reorg_history.json` | Most recent 100 fork-switch diagnostics; newest entries are returned first by the API. |
+| `wallets/*.json` | Encrypted private keys and public metadata, stored separately from nodes. |
+
+The legacy `mempool.json` is imported only when an existing chain snapshot has
+no `mempool` field. Its transactions are revalidated. A missing or stale mirror
+cannot erase accepted transactions in the authoritative snapshot.
+
+## Atomic writes
+
+`atomic_write_json` writes a temporary file in the destination directory,
+flushes and fsyncs it, replaces the destination with `os.replace`, and attempts
+to fsync the directory. Temporary files have owner-only permissions on POSIX.
+A failed serialization or replacement leaves the previous destination intact.
+NaN and infinite JSON numbers cannot be written.
+
+Wallet backup and import use an atomic, non-overwriting publication via a hard
+link. They fail if the destination already exists, preserving the existing file.
+
+Atomicity applies **per file**, not across all node files. The active chain and
+mempool share one snapshot, but caches, pools, and diagnostics may lag if the
+process or disk fails between writes. Restart rebuilds the transaction index,
+refreshes active block lookup, revalidates the mempool, and processes stored
+orphans and side branches. A journal entry or recent pool change can still be
+lost during an interrupted multi-file update.
+
+## Corrupt or missing chain files
+
+A missing `chain.json` creates a new genesis chain. An existing malformed,
+empty, or consensus-invalid chain causes startup to fail. QChain preserves the
+file instead of silently resetting balances. Do not delete a broken chain as
+an automatic repair step.
+
+Recovery procedure:
+
+1. Stop the affected node and preserve its entire directory for investigation.
+2. Restore a consistent backup into a separate directory and start with
+   `--data-dir /path/to/restored-node`.
+3. Check `/status`, then reconnect trusted peers and run `/sync`.
+4. If no backup exists, start a separate empty node and synchronize confirmed
+   history from a trusted peer. Pending transactions, private keys, and local
+   diagnostics cannot be recovered from confirmed chain history alone.
+
+Auxiliary caches use tolerant reads and can be reconstructed in part from the
+active chain. Tolerance for a cache must not be confused with safe recovery of
+an authoritative chain or wallet.
+
+## Backups and upgrades
+
+Stop a node before copying its entire directory. Independently running nodes
+need independent copies. A live directory copy can mix files from different
+moments despite atomic writes to individual files.
 
 ```bash
-python3 src/qchain.py node-status 5001
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
-python3 src/qchain.py node-transaction 5001 <tx_hash>
-python3 src/qchain.py node-address-transactions 5001 <address>
+python src/qchain.py wallet-backup alice ./backups/alice.json
+python src/qchain.py wallet-import ./backups/alice.json alice-restored
 ```
+
+The backup remains encrypted. Keep its password separately; there is no password
+reset or key recovery service. Import verifies the password and key pair.
+
+Before adopting v0.2.3-alpha, stop existing nodes and copy their data and wallets
+outside the checkout. The update removes historical demo files from Git
+tracking; applying that deletion in an older checkout can remove unchanged
+tracked demo files. Valid old integer-based chains and v2 encrypted wallets are
+supported. Old chains that violate the stricter validation rules are rejected
+and left intact; there is no automatic consensus-data repair.

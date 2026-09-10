@@ -1,6 +1,8 @@
 import os
+import time
+from functools import lru_cache
 
-from storage_utils import atomic_write_json, read_json_or_default
+from storage_utils import atomic_write_json, read_json_strict
 from block import Block
 from transaction import Transaction
 from config import (
@@ -12,6 +14,18 @@ from config import (
     GENESIS_TIMESTAMP,
 )
 
+from validation import (
+    is_integer, is_address, MAX_BLOCK_TRANSACTIONS,
+    MAX_MEMPOOL_TRANSACTIONS, MAX_FUTURE_BLOCK_SECONDS,
+)
+
+
+@lru_cache(maxsize=8)
+def genesis_nonce(difficulty):
+    block = Block(0, "0", [], difficulty, timestamp=GENESIS_TIMESTAMP)
+    block.mine()
+    return block.nonce
+
 
 class Blockchain:
     def __init__(
@@ -21,6 +35,10 @@ class Blockchain:
         storage_path: str = "../data/chain.json",
         auto_load: bool = True,
     ):
+        if not is_integer(difficulty, MIN_DIFFICULTY, MAX_DIFFICULTY):
+            raise ValueError("Invalid initial difficulty.")
+        if not is_integer(mining_reward, 1):
+            raise ValueError("Mining reward must be a positive integer.")
         self.difficulty = difficulty
         self.initial_difficulty = difficulty
         self.mining_reward = mining_reward
@@ -50,7 +68,8 @@ class Blockchain:
             difficulty=self.initial_difficulty,
             timestamp=GENESIS_TIMESTAMP,
         )
-        genesis.mine()
+        genesis.nonce = genesis_nonce(self.initial_difficulty)
+        genesis.hash = genesis.compute_hash()
         return genesis
 
     def latest_block(self) -> Block:
@@ -81,20 +100,11 @@ class Blockchain:
         atomic_write_json(self.storage_path, data)
 
     def load_from_disk(self) -> None:
-        data = read_json_or_default(
-            self.storage_path,
-            default={
-                "difficulty": self.difficulty,
-                "initial_difficulty": self.initial_difficulty,
-                "mining_reward": self.mining_reward,
-                "target_block_time": self.target_block_time,
-                "difficulty_adjustment_interval": self.difficulty_adjustment_interval,
-                "min_difficulty": self.min_difficulty,
-                "max_difficulty": self.max_difficulty,
-                "chain": [],
-                "mempool": [],
-            },
-        )
+        data = read_json_strict(self.storage_path)
+        if not isinstance(data.get("chain"), list) or not data["chain"]:
+            raise ValueError("Stored chain is empty or invalid; refusing to overwrite it.")
+        if not isinstance(data.get("mempool", []), list):
+            raise ValueError("Stored mempool must be a list.")
 
         self.difficulty = data.get("difficulty", self.difficulty)
 
@@ -125,23 +135,30 @@ class Blockchain:
             self.max_difficulty,
         )
 
+        if not (
+            is_integer(self.initial_difficulty, MIN_DIFFICULTY, MAX_DIFFICULTY)
+            and is_integer(self.mining_reward, 1)
+            and is_integer(self.target_block_time, 1)
+            and is_integer(self.difficulty_adjustment_interval, 2)
+            and is_integer(self.min_difficulty, MIN_DIFFICULTY, MAX_DIFFICULTY)
+            and is_integer(self.max_difficulty, self.min_difficulty, MAX_DIFFICULTY)
+        ):
+            raise ValueError("Stored consensus parameters are invalid.")
+
         self.chain = [
             Block.from_dict(block_data)
             for block_data in data.get("chain", [])
         ]
 
-        if len(self.chain) == 0:
-            self.chain = [self.create_genesis_block()]
-
-        self.mempool = [
-            Transaction.from_dict(tx_data)
-            for tx_data in data.get("mempool", [])
-        ]
-
-        self.rebuild_state()
-
         if not self.is_valid():
-            raise ValueError("Loaded blockchain is invalid.")
+            raise ValueError("Loaded blockchain is invalid; refusing to overwrite it.")
+        self.rebuild_state()
+        self.mempool = []
+        for tx_data in data.get("mempool", [])[:MAX_MEMPOOL_TRANSACTIONS]:
+            try:
+                self.mempool.append(Transaction.from_dict(tx_data))
+            except (ValueError, TypeError, KeyError):
+                continue
 
         self.clean_mempool()
         self.difficulty = self.calculate_next_difficulty()
@@ -164,28 +181,36 @@ class Blockchain:
         return balances, nonces
 
     def clean_mempool(self) -> None:
-        valid_transactions: list[Transaction] = []
-
-        temp_balances = self.balances.copy()
-        temp_nonces = self.nonces.copy()
-
-        for tx in self.mempool:
-            test_balances = temp_balances.copy()
-            test_nonces = temp_nonces.copy()
-
-            if self._apply_regular_transaction(tx, test_balances, test_nonces):
-                valid_transactions.append(tx)
-                temp_balances = test_balances
-                temp_nonces = test_nonces
-
-        removed = len(self.mempool) - len(valid_transactions)
-
-        if removed > 0:
-            print(f"Removed {removed} invalid transaction(s) from mempool.")
-
-        self.mempool = valid_transactions
+        # Retry dependencies: a recovered nonce 1 may make a pending nonce 2 valid.
+        remaining = list(self.mempool)
+        selected = []
+        balances, nonces = self.get_state()
+        seen = set()
+        while remaining and len(selected) < MAX_MEMPOOL_TRANSACTIONS:
+            deferred = []
+            progress = False
+            for tx in remaining:
+                if not tx.has_valid_fields() or tx.is_coinbase():
+                    continue
+                tx_hash = tx.transaction_hash()
+                if tx_hash in seen:
+                    continue
+                if len(selected) >= MAX_MEMPOOL_TRANSACTIONS:
+                    break
+                if self._apply_regular_transaction(tx, balances, nonces):
+                    selected.append(tx)
+                    seen.add(tx_hash)
+                    progress = True
+                else:
+                    deferred.append(tx)
+            if not progress:
+                break
+            remaining = deferred
+        self.mempool = selected
 
     def add_transaction(self, transaction: Transaction) -> bool:
+        if not transaction.has_valid_fields() or len(self.mempool) >= MAX_MEMPOOL_TRANSACTIONS:
+            return False
         if transaction.is_coinbase():
             print("Coinbase transactions cannot be added to the mempool.")
             return False
@@ -221,6 +246,12 @@ class Blockchain:
         miner_address: str,
         max_transactions: int | None = None,
     ) -> bool:
+        if not is_address(miner_address):
+            raise ValueError("Miner address must be 40 lowercase hexadecimal characters.")
+        if max_transactions is None:
+            max_transactions = MAX_BLOCK_TRANSACTIONS - 1
+        if not is_integer(max_transactions, 0, MAX_BLOCK_TRANSACTIONS - 1):
+            raise ValueError(f"max_transactions must be between 0 and {MAX_BLOCK_TRANSACTIONS - 1}.")
         selected_transactions = self._select_mempool_transactions(max_transactions)
 
         block_added = self._add_block(
@@ -311,6 +342,7 @@ class Blockchain:
             previous_hash=self.latest_block().hash,
             transactions=[tx.to_dict() for tx in all_transactions],
             difficulty=next_difficulty,
+            timestamp=max(time.time(), self.latest_block().timestamp),
         )
 
         if not self._apply_block_transactions(
@@ -347,6 +379,10 @@ class Blockchain:
         the node should run /sync instead.
         """
 
+        if not block.has_valid_proof():
+            return False, "Invalid block structure or Proof of Work."
+        if block.timestamp > time.time() + MAX_FUTURE_BLOCK_SECONDS:
+            return False, "Block timestamp is too far in the future."
         if len(self.chain) == 0:
             return False, "Local chain is empty."
 
@@ -363,6 +399,9 @@ class Blockchain:
 
         if block.previous_hash != self.latest_block().hash:
             return False, "Block does not extend current chain. Possible fork. Run sync."
+
+        if block.timestamp < self.latest_block().timestamp:
+            return False, "Block timestamp precedes its parent."
 
         expected_difficulty = self._calculate_expected_difficulty_for_index(
             block_index=block.index,
@@ -409,10 +448,10 @@ class Blockchain:
         if len(block.transactions) == 0:
             return False
 
-        transactions = [
-            Transaction.from_dict(tx_data)
-            for tx_data in block.transactions
-        ]
+        try:
+            transactions = [Transaction.from_dict(tx_data) for tx_data in block.transactions]
+        except (ValueError, TypeError, KeyError):
+            return False
 
         coinbase = transactions[0]
         regular_transactions = transactions[1:]
@@ -474,7 +513,7 @@ class Blockchain:
         balances: dict[str, int],
         nonces: dict[str, int],
     ) -> bool:
-        if tx.amount <= 0:
+        if not tx.has_valid_fields() or tx.is_coinbase():
             return False
 
         if tx.fee < 0:
@@ -577,6 +616,10 @@ class Blockchain:
             return False
 
         genesis = chain[0]
+        if not genesis.has_valid_proof():
+            return False
+        if genesis.hash != self.create_genesis_block().hash or genesis.transactions:
+            return False
 
         if genesis.index != 0:
             return False
@@ -596,6 +639,12 @@ class Blockchain:
         for i in range(1, len(chain)):
             current = chain[i]
             previous = chain[i - 1]
+            if not current.has_valid_proof():
+                return False
+            if current.timestamp < previous.timestamp:
+                return False
+            if current.timestamp > time.time() + MAX_FUTURE_BLOCK_SECONDS:
+                return False
 
             expected_difficulty = self._calculate_expected_difficulty_for_index(
                 block_index=i,
@@ -651,11 +700,39 @@ class Blockchain:
         print(f"Current work: {current_work}")
         print(f"Candidate work: {candidate_work}")
 
-        self.chain = candidate_chain
+        confirmed_hashes = {
+            Transaction.from_dict(tx).transaction_hash()
+            for block in candidate_chain for tx in block.transactions
+        }
+        disconnected = []
+        seen = set()
+        for block in self.chain:
+            for tx_data in block.transactions:
+                tx = Transaction.from_dict(tx_data)
+                tx_hash = tx.transaction_hash()
+                if not tx.is_coinbase() and tx_hash not in confirmed_hashes and tx_hash not in seen:
+                    disconnected.append(tx)
+                    seen.add(tx_hash)
+        pending = list(self.mempool)
+        self.chain = list(candidate_chain)
         self.balances, self.nonces = self.compute_state_for_chain(candidate_chain)
         self.difficulty = self.calculate_next_difficulty()
 
+        self.mempool = disconnected + pending
         self.clean_mempool()
+        accepted_hashes = {tx.transaction_hash() for tx in self.mempool}
+        recovered = [tx for tx in disconnected if tx.transaction_hash() in accepted_hashes]
+        rejected = [tx for tx in disconnected if tx.transaction_hash() not in accepted_hashes]
+        self.last_reorg_recovery = {
+            "candidate_count": len(disconnected),
+            "recovered_count": len(recovered),
+            "rejected_count": len(rejected),
+            "skipped_count": 0,
+            "recovered_transactions": [{"hash": tx.transaction_hash(), **tx.to_dict()} for tx in recovered],
+            "rejected_transactions": [{"hash": tx.transaction_hash(), **tx.to_dict(), "reason": "Invalid after reorg."} for tx in rejected],
+            "skipped_transactions": [],
+            "mempool_size": len(self.mempool),
+        }
         self.save_to_disk()
 
         return True

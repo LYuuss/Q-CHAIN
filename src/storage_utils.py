@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-def atomic_write_json(path: str | Path, data: dict[str, Any], indent: int = 2) -> None:
+def atomic_write_json(path: str | Path, data: dict[str, Any], indent: int = 2, *, overwrite: bool = True) -> None:
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -22,12 +22,17 @@ def atomic_write_json(path: str | Path, data: dict[str, Any], indent: int = 2) -
         ) as temp_file:
             temp_path = Path(temp_file.name)
 
-            json.dump(data, temp_file, indent=indent)
+            json.dump(data, temp_file, indent=indent, allow_nan=False)
             temp_file.write("\n")
             temp_file.flush()
             os.fsync(temp_file.fileno())
 
-        os.replace(temp_path, target_path)
+        if overwrite:
+            os.replace(temp_path, target_path)
+        else:
+            # Publishing by hard link fails atomically if the destination exists.
+            os.link(temp_path, target_path)
+            temp_path.unlink()
 
         try:
             directory_fd = os.open(target_path.parent, os.O_RDONLY)
@@ -64,3 +69,15 @@ def read_json_or_default(path: str | Path, default: dict[str, Any]) -> dict[str,
 
     except json.JSONDecodeError:
         return default
+
+
+def read_json_strict(path: str | Path) -> dict[str, Any]:
+    """Authoritative state must never be reset on a corrupt read."""
+    try:
+        with open(path, encoding="utf-8") as file:
+            data = json.load(file)
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        return data
+    except (ValueError, UnicodeError) as error:
+        raise ValueError(f"Invalid state file {path}; restore a backup before restarting.") from error

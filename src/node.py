@@ -1,14 +1,16 @@
 import argparse
 import json
+import re
+import time
 import urllib.error
-import urllib.request
-import requests
 from pathlib import Path
 from typing import Any
+from threading import RLock
 from urllib.parse import urlparse
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, has_request_context, jsonify, request
 
+from explorer import register_explorer, paginate, with_confirmations
 from block import Block
 from blockchain import Blockchain
 from config import (
@@ -21,35 +23,20 @@ from config import (
 from transaction import Transaction
 from block_store import BlockStore
 from transaction_index import TransactionIndex
-from storage_utils import atomic_write_json, read_json_or_default
+from storage_utils import atomic_write_json, read_json_or_default, read_json_strict
+from http_client import fetch_json, post_json, HttpJsonError
+from validation import (
+    is_address,
+    is_hex,
+    is_integer,
+    validate_header,
+    MAX_JSON_BYTES,
+    MAX_BLOCK_TRANSACTIONS,
+    MAX_FUTURE_BLOCK_SECONDS,
+)
 
 MAX_ORPHAN_BLOCKS = 100
 MAX_SIDE_BRANCH_BLOCKS = 200
-
-class HttpJsonError(Exception):
-    def __init__(self, status_code: int, body: dict[str, Any] | None, raw_body: str):
-        self.status_code = status_code
-        self.body = body
-        self.raw_body = raw_body
-
-        message = f"HTTP {status_code}"
-
-        if body is not None:
-            message += f": {body}"
-        elif raw_body:
-            message += f": {raw_body}"
-
-        super().__init__(message)
-
-
-def normalize_peer_url(url: str) -> str:
-    clean_url = url.strip().rstrip("/")
-
-    if not clean_url.startswith(("http://", "https://")):
-        clean_url = "http://" + clean_url
-
-    return clean_url
-
 
 def load_peers(peers_path: Path) -> set[str]:
     data = read_json_or_default(
@@ -59,7 +46,8 @@ def load_peers(peers_path: Path) -> set[str]:
         },
     )
 
-    return set(data.get("peers", []))
+    values = data.get("peers", [])
+    return {value for value in values if isinstance(value, str)} if isinstance(values, list) else set()
 
 
 def save_peers(peers_path: Path, peers: set[str]) -> None:
@@ -79,9 +67,16 @@ def load_block_pool(pool_path: Path) -> dict[str, Block]:
 
     blocks = {}
 
-    for block_hash, block_data in data.get("blocks", {}).items():
-        block = Block.from_dict(block_data)
-        blocks[block_hash] = block
+    entries = data.get("blocks", {})
+    if not isinstance(entries, dict):
+        return blocks
+    for block_hash, block_data in entries.items():
+        try:
+            block = Block.from_dict(block_data)
+            if block.hash == block_hash and block.has_valid_proof():
+                blocks[block_hash] = block
+        except (ValueError, TypeError, KeyError):
+            continue
 
     return blocks
 
@@ -106,9 +101,15 @@ def load_transaction_pool(pool_path: Path) -> list[Transaction]:
 
     transactions = []
 
-    for tx_data in data.get("transactions", []):
-        transaction = Transaction.from_dict(tx_data)
-        transactions.append(transaction)
+    entries = data.get("transactions", [])
+    if not isinstance(entries, list):
+        return transactions
+    for tx_data in entries:
+        try:
+            transaction = Transaction.from_dict(tx_data)
+            transactions.append(transaction)
+        except (ValueError, TypeError, KeyError):
+            continue
 
     return transactions
 
@@ -122,57 +123,6 @@ def save_transaction_pool(pool_path: Path, transactions: list[Transaction]) -> N
 
     atomic_write_json(pool_path, data)
 
-def parse_json_body(raw_body: str) -> dict[str, Any] | None:
-    try:
-        return json.loads(raw_body)
-    except json.JSONDecodeError:
-        return None
-
-
-def fetch_json(url: str, timeout: int = 5) -> dict[str, Any]:
-    request_obj = urllib.request.Request(
-        url=url,
-        method="GET",
-        headers={
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body)
-
-    except urllib.error.HTTPError as error:
-        raw_body = error.read().decode("utf-8")
-        json_body = parse_json_body(raw_body)
-        raise HttpJsonError(error.code, json_body, raw_body) from error
-
-
-def post_json(url: str, payload: dict[str, Any], timeout: int = 5) -> dict[str, Any]:
-    body = json.dumps(payload).encode("utf-8")
-
-    request_obj = urllib.request.Request(
-        url=url,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
-            response_body = response.read().decode("utf-8")
-            return json.loads(response_body)
-
-    except urllib.error.HTTPError as error:
-        raw_body = error.read().decode("utf-8")
-        json_body = parse_json_body(raw_body)
-        raise HttpJsonError(error.code, json_body, raw_body) from error
-
-
 def should_trigger_sync(message: str) -> bool:
     lower_message = message.lower()
 
@@ -184,23 +134,32 @@ def should_trigger_sync(message: str) -> bool:
     )
 
 def normalize_peer_url(peer_url: str) -> str | None:
-    if not isinstance(peer_url, str):
+    if not isinstance(peer_url, str) or len(peer_url) > 2048:
         return None
-
-    peer_url = peer_url.strip().rstrip("/")
-
-    if not peer_url:
+    peer_url = peer_url.strip()
+    if any(char.isspace() for char in peer_url) or "\\" in peer_url:
         return None
-
-    parsed = urlparse(peer_url)
-
-    if parsed.scheme not in {"http", "https"}:
+    try:
+        parsed = urlparse(peer_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            return None
+        host = parsed.hostname.lower()
+        if not re.fullmatch(r"[a-z0-9.:-]+", host):
+            return None
+        port = parsed.port
+        if port is not None and not 1 <= port <= 65535:
+            return None
+        if ":" in host:
+            host = f"[{host}]"
+        if port is not None and port != (80 if parsed.scheme == "http" else 443):
+            host += f":{port}"
+        return f"{parsed.scheme}://{host}"
+    except ValueError:
         return None
-
-    if not parsed.netloc:
-        return None
-
-    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def extract_peer_url(payload: dict) -> str | None:
@@ -215,6 +174,9 @@ def extract_peer_url(payload: dict) -> str | None:
     return normalize_peer_url(peer_url)
 
 def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
+    normalized_advertised_url = normalize_peer_url(advertised_url)
+    if advertised_url is not None and normalized_advertised_url is None:
+        raise ValueError("Invalid advertised URL: expected an HTTP(S) origin.")
     data_dir.mkdir(parents=True, exist_ok=True)
 
     chain_path = data_dir / "chain.json"
@@ -224,6 +186,14 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     side_branch_blocks_path = data_dir / "side_branch_blocks.json"
     mempool_path = data_dir / "mempool.json"
     transaction_index_path = data_dir / "tx_index.json"
+    reorg_history_path = data_dir / "reorg_history.json"
+    reorg_data = read_json_or_default(reorg_history_path, {"reorgs": []})
+    reorg_history = reorg_data.get("reorgs", [])
+    if not isinstance(reorg_history, list):
+        reorg_history = []
+    reorg_history = [entry for entry in reorg_history if isinstance(entry, dict)][-100:]
+    # chain.json is authoritative. Only import the old mirror during migration.
+    migrate_mempool = chain_path.exists() and "mempool" not in read_json_strict(chain_path)
 
     chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
@@ -238,13 +208,11 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     transaction_index = TransactionIndex(transaction_index_path)
     transaction_index.rebuild_from_chain(chain.chain)
 
-    normalized_advertised_url = normalize_peer_url(advertised_url)
-
     loaded_peers = load_peers(peers_path)
 
     peers = {
         normalized_peer
-        for peer in loaded_peers
+        for peer in sorted(loaded_peers)[:32]
         if (normalized_peer := normalize_peer_url(peer)) is not None
         and normalized_peer != normalized_advertised_url
     }
@@ -257,28 +225,49 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     side_branch_blocks = load_block_pool(side_branch_blocks_path)
     block_store.put_many(list(side_branch_blocks.values()))
 
-    persisted_mempool = load_transaction_pool(mempool_path)
-    chain.mempool = []
-
-    seen_transaction_hashes = set()
-
-    for transaction in persisted_mempool:
-        transaction_hash = transaction.transaction_hash()
-
-        if transaction_hash in seen_transaction_hashes:
-            continue
-
-        if transaction.is_coinbase():
-            continue
-
-        added = chain.add_transaction(transaction)
-
-        if added:
-            seen_transaction_hashes.add(transaction_hash)
-
+    if migrate_mempool:
+        chain.mempool = load_transaction_pool(mempool_path)
+        chain.clean_mempool()
+        chain.save_to_disk()
     save_transaction_pool(mempool_path, chain.mempool)
 
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BYTES
+    state_lock = RLock()
+
+    @app.before_request
+    def lock_state():
+        if request.method == "POST" and (request.content_length or request.is_json):
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "Request body must be a JSON object."}), 400
+        state_lock.acquire()
+        g.state_locked = True
+
+    @app.teardown_request
+    def unlock_state(error=None):
+        if g.pop("state_locked", False):
+            state_lock.release()
+
+    @app.errorhandler(400)
+    def bad_request(error):
+        return jsonify({"error": error.description}), 400
+
+    @app.errorhandler(413)
+    def request_too_large(error):
+        return jsonify({"error": "Request body exceeds the size limit."}), 413
+
+    def network_call(function, *args, **kwargs):
+        # Commit local state before I/O; peers must be able to call back while
+        # this request waits on their response (including triangle broadcasts).
+        locked = has_request_context() and g.get("state_locked", False)
+        if locked:
+            state_lock.release()
+        try:
+            return function(*args, **kwargs)
+        finally:
+            if locked:
+                state_lock.acquire()
 
     def add_peer(peer_url: str) -> tuple[bool, str, str | None]:
         normalized_peer = normalize_peer_url(peer_url)
@@ -286,12 +275,17 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         if normalized_peer is None:
             return False, "Invalid peer URL.", None
 
-        if normalized_peer == normalized_advertised_url:
+        self_urls = {normalized_advertised_url}
+        if has_request_context():
+            self_urls.add(normalize_peer_url(request.host_url))
+        if normalized_peer in self_urls:
             return False, "Cannot add self as peer.", normalized_peer
 
         if normalized_peer in peers:
             return False, "Peer already known.", normalized_peer
 
+        if len(peers) >= 32:
+            return False, "Peer limit reached.", normalized_peer
         peers.add(normalized_peer)
         save_peers(peers_path, peers)
 
@@ -311,13 +305,15 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     def get_local_node_url() -> str:
         if advertised_url is not None:
-            return advertised_url
+            return normalized_advertised_url
 
         return request.host_url.rstrip("/")
 
     def chain_summary() -> dict[str, Any]:
         return {
             "project": PROJECT_NAME,
+            "version": "0.2.3-alpha",
+            "reorg_count": len(reorg_history),
             "coin": COIN_NAME,
             "height": len(chain.chain) - 1,
             "latest_hash": chain.latest_block().hash,
@@ -424,108 +420,32 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         return results
 
-    def collect_disconnected_transactions(
-        old_chain: list[Block],
-        new_chain: list[Block],
-    ) -> list[Transaction]:
-        new_block_hashes = {
-            block.hash
-            for block in new_chain
-        }
-
-        new_transaction_hashes = transaction_hashes_from_blocks(new_chain)
-
-        disconnected_transactions = []
-        seen_transaction_hashes = set()
-
-        for old_block in old_chain:
-            if old_block.hash in new_block_hashes:
-                continue
-
-            for tx_data in old_block.transactions:
-                transaction = Transaction.from_dict(tx_data)
-
-                if transaction.is_coinbase():
-                    continue
-
-                transaction_hash = transaction.transaction_hash()
-
-                if transaction_hash in new_transaction_hashes:
-                    continue
-
-                if transaction_hash in seen_transaction_hashes:
-                    continue
-
-                seen_transaction_hashes.add(transaction_hash)
-                disconnected_transactions.append(transaction)
-
-        return disconnected_transactions
-
-    def recover_mempool_after_reorg(
-        old_chain: list[Block],
-        new_chain: list[Block],
-    ) -> dict[str, Any]:
-        disconnected_transactions = collect_disconnected_transactions(
-            old_chain=old_chain,
-            new_chain=new_chain,
-        )
-
-        recovered_transactions = []
-        rejected_transactions = []
-        skipped_transactions = []
-
-        for transaction in disconnected_transactions:
-            transaction_hash = transaction.transaction_hash()
-
-            if transaction_is_known(transaction):
-                skipped_transactions.append(
-                    {
-                        "hash": transaction_hash,
-                        "sender": transaction.sender,
-                        "receiver": transaction.receiver,
-                        "amount": transaction.amount,
-                        "fee": transaction.fee,
-                        "reason": "Transaction already known in current chain or mempool.",
-                    }
-                )
-                continue
-
-            added = chain.add_transaction(transaction)
-
-            if added:
-                recovered_transactions.append(
-                    {
-                        "hash": transaction_hash,
-                        "sender": transaction.sender,
-                        "receiver": transaction.receiver,
-                        "amount": transaction.amount,
-                        "fee": transaction.fee,
-                    }
-                )
-            else:
-                rejected_transactions.append(
-                    {
-                        "hash": transaction_hash,
-                        "sender": transaction.sender,
-                        "receiver": transaction.receiver,
-                        "amount": transaction.amount,
-                        "fee": transaction.fee,
-                        "reason": "Transaction is no longer valid after reorg.",
-                    }
-                )
-
+    def recover_mempool_after_reorg(old_chain, new_chain, reason="side_branch"):
+        result = chain.last_reorg_recovery
         save_mempool()
-
-        return {
-            "candidate_count": len(disconnected_transactions),
-            "recovered_count": len(recovered_transactions),
-            "rejected_count": len(rejected_transactions),
-            "skipped_count": len(skipped_transactions),
-            "recovered_transactions": recovered_transactions,
-            "rejected_transactions": rejected_transactions,
-            "skipped_transactions": skipped_transactions,
-            "mempool_size": len(chain.mempool),
-        }
+        current_hashes = {block.hash for block in new_chain}
+        disconnected = [block for block in old_chain if block.hash not in current_hashes]
+        # Keep the losing chain attachable: it can become the heaviest again.
+        remove_side_branch_blocks_present_in_main_chain()
+        for block in disconnected:
+            add_side_branch_block(block)
+        if disconnected:
+            common_height = next(
+                (block.index for block in reversed(old_chain) if block.hash in current_hashes), 0
+            )
+            reorg_history.append({
+                "old_tip": old_chain[-1].hash, "new_tip": new_chain[-1].hash,
+                "old_height": old_chain[-1].index, "new_height": new_chain[-1].index,
+                "common_ancestor_height": common_height,
+                "disconnected_block_count": len(disconnected),
+                "connected_block_count": len(new_chain) - common_height - 1,
+                "recovered_transaction_count": result["recovered_count"],
+                "rejected_transaction_count": result["rejected_count"],
+                "reason": reason, "timestamp": time.time(),
+            })
+            del reorg_history[:-100]
+            atomic_write_json(reorg_history_path, {"reorgs": reorg_history})
+        return result
 
     def get_sorted_peers_by_work() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         peer_statuses = []
@@ -533,7 +453,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         for peer in sorted(peers):
             try:
-                status = fetch_json(f"{peer}/status")
+                status = network_call(fetch_json, f"{peer}/status")
+                if not is_integer(status.get("cumulative_work")) or not is_integer(status.get("height")):
+                    raise ValueError("Peer status contains invalid height or cumulative work.")
 
                 peer_statuses.append(
                     {
@@ -604,7 +526,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 continue
 
             try:
-                headers_data = fetch_json(f"{peer}/headers")
+                headers_data = network_call(fetch_json, f"{peer}/headers")
                 peer_headers = headers_data.get("headers", [])
 
                 headers_valid, headers_message = validate_headers(peer_headers)
@@ -643,11 +565,12 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 if not missing_headers:
                     continue
 
+                local_prefix = list(chain.chain[: common_index + 1])
                 missing_blocks = []
 
                 for header in missing_headers:
                     block_hash = header["hash"]
-                    block_data = fetch_json(f"{peer}/blocks/{block_hash}")
+                    block_data = network_call(fetch_json, f"{peer}/blocks/{block_hash}")
                     block = Block.from_dict(block_data["block"])
 
                     if block.hash != block_hash:
@@ -665,8 +588,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                         }
                     )
 
-                block_store.put_many(missing_blocks)
-                candidate_chain = chain.chain[: common_index + 1] + missing_blocks
+                candidate_chain = local_prefix + missing_blocks
 
                 old_chain = list(chain.chain)
 
@@ -679,6 +601,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     mempool_recovery_result = recover_mempool_after_reorg(
                         old_chain=old_chain,
                         new_chain=chain.chain,
+                        reason=f"sync:{peer}",
                     )
 
                     mempool_recovery_results.append(
@@ -700,9 +623,11 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 )
 
         orphan_result = process_orphans()
+        side_branch_result = try_adopt_side_branches()
 
         return {
-            "adopted_new_chain": adopted,
+            "side_branch_result": side_branch_result,
+            "adopted_new_chain": adopted or side_branch_result["adopted_count"] > 0,
             "height": len(chain.chain) - 1,
             "latest_hash": chain.latest_block().hash,
             "cumulative_work": chain.calculate_cumulative_work(),
@@ -728,7 +653,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 continue
 
             try:
-                response = post_json(
+                response = network_call(post_json,
                     url=f"{peer}/blocks",
                     payload=payload,
                 )
@@ -779,7 +704,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 continue
 
             try:
-                response = post_json(
+                response = network_call(post_json,
                     url=f"{peer}/transactions",
                     payload=payload,
                 )
@@ -864,8 +789,11 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             }
         )
 
+    @app.get("/addresses/<address>/balance")
     @app.get("/balances/<address>")
     def get_balance(address: str):
+        if not is_address(address):
+            return jsonify({"error": "Invalid address."}), 400
         return jsonify(
             {
                 "address": address,
@@ -883,7 +811,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             return jsonify(
                 {
                     "found": True,
-                    "transaction": pending_transaction,
+                    "transaction": with_confirmations(pending_transaction, chain),
                 }
             )
 
@@ -893,7 +821,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             return jsonify(
                 {
                     "found": True,
-                    "transaction": indexed_transaction,
+                    "transaction": with_confirmations(indexed_transaction, chain),
                 }
             )
 
@@ -907,15 +835,19 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
     @app.get("/addresses/<address>/transactions")
     def get_address_transactions(address: str):
+        if not is_address(address):
+            return jsonify({"error": "Invalid address."}), 400
         confirmed_transactions = transaction_index.find_by_address(address)
         pending_transactions = pending_transactions_for_address(address)
 
-        transactions = confirmed_transactions + pending_transactions
+        transactions, pagination = paginate([
+            with_confirmations(tx, chain) for tx in confirmed_transactions + pending_transactions
+        ])
 
         return jsonify(
             {
                 "address": address,
-                "count": len(transactions),
+                **pagination,
                 "confirmed_count": len(confirmed_transactions),
                 "pending_count": len(pending_transactions),
                 "transactions": transactions,
@@ -931,17 +863,14 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         source_url = payload.get("source")
 
-        if source_url:
-            source_url = normalize_peer_url(source_url)
-            peers.add(source_url)
-            save_peers(peers_path, peers)
+        source_url = normalize_peer_url(source_url)
 
         tx_data = payload.get("transaction", payload)
 
         try:
             transaction = Transaction.from_dict(tx_data)
-        except KeyError as error:
-            return jsonify({"error": f"Invalid transaction field: {error}"}), 400
+        except (KeyError, ValueError, TypeError) as error:
+            return jsonify({"error": f"Invalid transaction: {error}"}), 400
 
         if transaction.is_coinbase():
             return jsonify(
@@ -1003,19 +932,21 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         block_data = payload.get("block")
         source_url = payload.get("source")
 
-        if source_url:
-            source_url = normalize_peer_url(source_url)
-            peers.add(source_url)
-            save_peers(peers_path, peers)
+        source_url = normalize_peer_url(source_url)
 
         if block_data is None:
             return jsonify({"error": "Missing block field."}), 400
 
         try:
             block = Block.from_dict(block_data)
-        except (KeyError, ValueError) as error:
+        except (KeyError, ValueError, TypeError) as error:
             return jsonify({"accepted": False, "error": str(error)}), 400
 
+        if not block_has_basic_validity(block):
+            return jsonify({"accepted": False, "error": "Invalid block structure or proof."}), 400
+        if block.hash in orphan_blocks or block.hash in side_branch_blocks:
+            return jsonify({"accepted": False, "already_known": True,
+                            "location": get_block_location(block.hash)}), 200
         accepted, message = chain.add_external_block(block)
 
         if message == "Block already known.":
@@ -1161,11 +1092,11 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         if not miner_address:
             return jsonify({"error": "Missing miner_address."}), 400
 
-        if not isinstance(miner_address, str) or len(miner_address) != 40:
+        if not is_address(miner_address):
             return jsonify({"error": "miner_address must be a 40-character address."}), 400
 
-        if max_transactions is not None and not isinstance(max_transactions, int):
-            return jsonify({"error": "max_transactions must be an integer."}), 400
+        if max_transactions is not None and not is_integer(max_transactions, 0, MAX_BLOCK_TRANSACTIONS - 1):
+            return jsonify({"error": f"max_transactions must be between 0 and {MAX_BLOCK_TRANSACTIONS - 1}."}), 400
 
         old_height = len(chain.chain) - 1
 
@@ -1258,14 +1189,10 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
         for peer in current_peers:
             try:
-                response = requests.get(
-                    f"{peer}/peers",
-                    timeout=3,
-                )
-                response.raise_for_status()
-                data = response.json()
-
-            except requests.RequestException as error:
+                data = network_call(fetch_json, f"{peer}/peers", timeout=3)
+                if not isinstance(data, dict):
+                    raise ValueError("Peer response must be an object.")
+            except (urllib.error.URLError, TimeoutError, ValueError, HttpJsonError) as error:
                 failed_peers.append(
                     {
                         "peer": peer,
@@ -1285,7 +1212,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 )
                 continue
 
-            for remote_peer in remote_peers:
+            for remote_peer in remote_peers[:32]:
                 added, message, normalized_peer = add_peer(remote_peer)
 
                 result = {
@@ -1341,35 +1268,30 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         return "unknown"
     
     def block_has_basic_validity(block: Block) -> bool:
-        if block.hash != block.compute_hash():
+        if not block.has_valid_proof() or block.timestamp > time.time() + MAX_FUTURE_BLOCK_SECONDS:
             return False
-
-        if not block.verify_merkle_root():
+        if block.index == 0:
+            return block.hash == chain.chain[0].hash and not block.transactions
+        try:
+            txs = [Transaction.from_dict(tx) for tx in block.transactions]
+            return bool(txs) and txs[0].is_coinbase() and txs[0].nonce == block.index and all(
+                tx.verify() and not tx.is_coinbase() for tx in txs[1:]
+            ) and txs[0].amount == chain.mining_reward + sum(tx.fee for tx in txs[1:])
+        except (ValueError, KeyError, TypeError):
             return False
-
-        if not block.hash.startswith("0" * block.difficulty):
-            return False
-
-        return True
 
     def can_remain_orphan(block: Block, message: str) -> bool:
         if not block_has_basic_validity(block):
             return False
 
-        known_hashes = known_block_hashes()
-
-        if block.previous_hash not in known_hashes and block.index > 0:
-            return True
-
-        lower_message = message.lower()
-
         return (
-            "missing previous blocks" in lower_message
-            or "parent" in lower_message
+            block.index > 0
+            and block.previous_hash not in known_block_hashes()
+            and block.previous_hash not in side_branch_blocks
         )
     
     def should_store_as_orphan(block: Block, message: str) -> bool:
-        if block_is_known(block.hash):
+        if block_is_known(block.hash) or block.hash in side_branch_blocks:
             return False
 
         return can_remain_orphan(block, message)
@@ -1419,10 +1341,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     orphan_pool_changed = True
                     progress = True
 
-                    broadcast_results = broadcast_block(
-                        block=orphan_block,
-                        exclude_peer=None,
-                    )
+                    # The original sender or the next explicit sync propagates it.
+                    broadcast_results = []
 
                     attached_blocks.append(
                         {
@@ -1515,10 +1435,16 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         if not block_has_basic_validity(block):
             return False
 
-        parent_is_in_main_chain = find_chain_index_by_hash(block.previous_hash) is not None
-        parent_is_in_side_branch = block.previous_hash in side_branch_blocks
-
-        return parent_is_in_main_chain or parent_is_in_side_branch
+        parent_index = find_chain_index_by_hash(block.previous_hash)
+        if parent_index is not None:
+            prefix = chain.chain[:parent_index + 1]
+        elif block.previous_hash in side_branch_blocks:
+            prefix, _ = build_side_branch_candidate(block.previous_hash)
+            if prefix is None:
+                return False
+        else:
+            return False
+        return chain.is_valid_chain(prefix + [block])
 
     def add_side_branch_block(block: Block) -> tuple[bool, str]:
         if side_branch_block_is_known(block.hash):
@@ -1644,6 +1570,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                     old_chain=old_chain,
                     new_chain=chain.chain,
                 )
+                checked_branches[-1]["mempool_recovery_result"] = mempool_recovery_result
 
                 removed_count = remove_side_branch_blocks_present_in_main_chain()
 
@@ -1711,10 +1638,14 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         ).hexdigest()
 
     def validate_headers(headers: list[dict[str, Any]]) -> tuple[bool, str]:
-        if not headers:
-            return False, "Header list is empty."
+        if not isinstance(headers, list) or not headers or len(headers) > 10000:
+            return False, "Header list is empty, invalid, or exceeds 10000 entries."
 
         for position, header in enumerate(headers):
+            try:
+                validate_header(header)
+            except ValueError as error:
+                return False, str(error)
             required_fields = {
                 "index",
                 "previous_hash",
@@ -1730,6 +1661,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             if missing_fields:
                 return False, f"Header is missing fields: {sorted(missing_fields)}"
 
+            if not is_hex(header["hash"], 64):
+                return False, "Invalid header hash format."
             expected_hash = compute_header_hash(header)
 
             if header["hash"] != expected_hash:
@@ -1798,6 +1731,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 {
                     "found": True,
                     "location": get_block_location(block_hash),
+                    "confirmations": len(chain.chain) - block.index if block_hash in known_block_hashes() else 0,
                     "block": block.to_dict(),
                 }
             )
@@ -1810,6 +1744,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             }
         ), 404
     
+    register_explorer(app, chain, transaction_index, reorg_history)
+    process_orphans()
+    try_adopt_side_branches()
     return app
 
 def parse_args() -> argparse.Namespace:
@@ -1853,10 +1790,7 @@ def main() -> None:
     else:
         data_dir = Path(args.data_dir)
 
-    advertised_url = None
-
-    if args.advertised_url is not None:
-        advertised_url = normalize_peer_url(args.advertised_url)
+    advertised_url = args.advertised_url
 
     app = create_app(
         data_dir=data_dir,

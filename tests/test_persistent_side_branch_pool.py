@@ -143,17 +143,17 @@ def test_persisted_side_branch_can_reorg_after_restart(tmp_path):
 
     assert second_data["side_branch_stored"] is True
     assert second_data["side_branch_result"]["adopted_count"] == 1
-    assert second_data["side_branch_pool_size"] == 0
+    assert second_data["side_branch_pool_size"] == 1  # The disconnected main block is retained.
 
     status = restarted_client.get("/status").get_json()
 
     assert status["height"] == 2
     assert status["latest_hash"] == side_block_2.hash
-    assert status["side_branch_pool_size"] == 0
+    assert status["side_branch_pool_size"] == 1
 
     final_side_branches = restarted_client.get("/side-branches").get_json()
 
-    assert final_side_branches["size"] == 0
+    assert final_side_branches["size"] == 1
 
     reloaded_after_reorg_app = create_app(
         data_dir=node_data_dir,
@@ -167,5 +167,5 @@ def test_persisted_side_branch_can_reorg_after_restart(tmp_path):
 
     assert final_status_after_restart["height"] == 2
     assert final_status_after_restart["latest_hash"] == side_block_2.hash
-    assert final_status_after_restart["side_branch_pool_size"] == 0
-    assert final_side_branches_after_restart["size"] == 0
+    assert final_status_after_restart["side_branch_pool_size"] == 1
+    assert final_side_branches_after_restart["size"] == 1

@@ -12,6 +12,11 @@ from cryptography.hazmat.primitives.serialization import (
 
 class CryptoProvider:
     @staticmethod
+    def public_key_from_private(private_key_hex: str) -> str:
+        key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(private_key_hex))
+        return key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+    @staticmethod
     def generate_keypair() -> tuple[str, str]:
         private_key = Ed25519PrivateKey.generate()
         public_key = private_key.public_key()

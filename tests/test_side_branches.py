@@ -111,14 +111,14 @@ def test_side_branch_is_adopted_when_it_becomes_heavier(tmp_path):
 
     assert second_data["side_branch_stored"] is True
     assert second_data["side_branch_result"]["adopted_count"] == 1
-    assert second_data["side_branch_pool_size"] == 0
+    assert second_data["side_branch_pool_size"] == 1  # The disconnected main block is retained.
 
     status = client.get("/status").get_json()
 
     assert status["height"] == 2
     assert status["latest_hash"] == side_block_2.hash
-    assert status["side_branch_pool_size"] == 0
+    assert status["side_branch_pool_size"] == 1
 
     side_branches = client.get("/side-branches").get_json()
 
-    assert side_branches["size"] == 0
+    assert side_branches["size"] == 1

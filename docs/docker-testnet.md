@@ -1,174 +1,86 @@
-# QChain Docker Testnet
+# Docker testnet
 
-QChain includes a Docker-based local testnet with three nodes.
+The Compose configuration runs three HTTP nodes on an isolated Docker network.
+Install Docker with the Compose plugin. The host CLI still requires the Python
+runtime dependencies from the root README.
 
----
+| Node | Host URL | URL announced to Docker peers | Host state directory |
+| --- | --- | --- | --- |
+| node1 | `http://127.0.0.1:5001` | `http://node1:5000` | `data/docker/node1/` |
+| node2 | `http://127.0.0.1:5002` | `http://node2:5000` | `data/docker/node2/` |
+| node3 | `http://127.0.0.1:5003` | `http://node3:5000` | `data/docker/node3/` |
 
-## Nodes
+The host ports bind only to loopback. Inside each container, the server listens
+on `0.0.0.0:5000`. Its health check queries the lightweight `/health` endpoint.
 
-Host URLs:
-
-```text
-node1 -> http://127.0.0.1:5001
-node2 -> http://127.0.0.1:5002
-node3 -> http://127.0.0.1:5003
-```
-
-Internal Docker URLs:
-
-```text
-node1 -> http://node1:5000
-node2 -> http://node2:5000
-node3 -> http://node3:5000
-```
-
-Inside Docker, nodes must use the internal service names instead of `127.0.0.1`.
-
----
-
-## Start
+## Start and use
 
 ```bash
 bash scripts/start_docker_testnet.sh
+docker compose ps
+python src/qchain.py wallet-create alice
+python src/qchain.py wallet-create bob
+python src/qchain.py wallet-create miner
+python src/qchain.py node-mine 5001 alice
+python src/qchain.py node-send 5001 alice bob 10 --fee 2
+python src/qchain.py node-mine 5002 miner
+python src/qchain.py node-balance 5003 bob
 ```
 
-Manual equivalent:
+The start script builds the image, starts containers, waits for node readiness,
+and connects all six directed peer links. The connect script uses Docker DNS
+names in the peer set; host `127.0.0.1:5002` would refer to the wrong process from
+inside another container.
+
+Wallets stay on the host under `data/wallets/`. Signing happens locally. Nodes
+receive public addresses and signed transactions, never wallet files or passwords.
+The local CLI chain (`mine`, `send`) is separate from the Docker testnet
+(`node-mine`, `node-send`).
+
+## Inspect and restart
 
 ```bash
-docker compose up -d --build
-bash scripts/connect_docker_nodes.sh
+bash scripts/status_all.sh
+bash scripts/mempool_all.sh
+python src/qchain.py node-blocks 5001 --limit 10
+python src/qchain.py node-transactions 5001
+python src/qchain.py node-reorgs 5001
+docker compose logs --tail=100 node1
+docker compose restart node2
+python src/qchain.py node-sync 5002
 ```
 
----
-
-## Stop
+Chain state, pending transactions, peers, forks, and reorg diagnostics survive
+normal restarts through bind-mounted directories. Sync remains an explicit
+operation; restarting a stale node does not start a background sync loop.
 
 ```bash
 bash scripts/stop_docker_testnet.sh
 ```
 
-or:
+Stopping containers preserves the bind-mounted data and host wallets.
 
-```bash
-docker compose down
-```
+## Back up or reset
 
----
+Stop the testnet before copying `data/docker/` to a separate backup location.
+Back up host wallets independently with `wallet-backup`.
 
-## Reset
+For an intentionally fresh Docker chain:
 
 ```bash
 bash scripts/reset_docker_testnet.sh
 ```
 
-This removes Docker node state under:
+**This deletes `data/docker/`, including all three nodes' chains, balances,
+pending transactions, pools, and journals.** It rebuilds/restarts/reconnects the
+nodes. Host wallets under `data/wallets/` and the local CLI chain remain separate.
 
-```text
-data/docker/
-```
+Do not use reset to repair valuable experimental history: preserve the files
+and follow [storage recovery](storage-layer.md) instead.
 
-It does not delete wallets under:
+## Validation
 
-```text
-data/wallets/
-```
-
----
-
-## Inspect All Nodes
-
-```bash
-bash scripts/status_all.sh
-bash scripts/mempool_all.sh
-bash scripts/balance_all.sh <address>
-```
-
----
-
-## Docker Node Storage
-
-Docker node data is stored under:
-
-```text
-data/docker/
-```
-
-Each node can persist:
-
-```text
-chain.json
-peers.json
-block_index.json
-orphan_blocks.json
-side_branch_blocks.json
-mempool.json
-tx_index.json
-```
-
----
-
-## Wallet Storage
-
-Wallet files are stored outside the Docker node state by default:
-
-```text
-data/wallets/*.json
-```
-
-Wallet files are encrypted and written atomically.
-
----
-
-## Testnet Example
-
-```bash
-bash scripts/start_docker_testnet.sh
-
-python3 src/qchain.py wallet-create alice
-python3 src/qchain.py wallet-create bob
-python3 src/qchain.py wallet-create miner
-
-python3 src/qchain.py node-mine 5001 alice
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-python3 src/qchain.py node-mempool 5001
-python3 src/qchain.py node-mine 5002 miner
-
-python3 src/qchain.py node-balance 5001 bob
-python3 src/qchain.py node-address-transactions 5001 <bob_address>
-```
-
----
-
-## Sync
-
-```bash
-python3 src/qchain.py node-sync 5001
-```
-
-Header-first sync flow:
-
-```text
-GET /status
-GET /headers
-validate headers
-find common ancestor
-download missing blocks
-build candidate chain
-adopt if heavier
-recover mempool transactions if reorg occurs
-```
-
----
-
-## Fork Inspection
-
-```bash
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-side-branches 5001
-```
-
----
-
-## Notes
-
-The Docker testnet is intended for local development only.
+GitHub Actions builds the image, starts healthy nodes, and connects their peers.
+The standalone `python scripts/smoke_testnet.py` exercises real HTTP discovery,
+broadcasts, restart, balances, and header-first synchronization without Docker.
+See [validation notes](validation.md) for what was actually run for this milestone.

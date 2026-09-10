@@ -24,9 +24,16 @@ class BlockStore:
 
         self.blocks = {}
 
-        for block_data in data.get("blocks", {}).values():
-            block = Block.from_dict(block_data)
-            self.blocks[block.hash] = block
+        entries = data.get("blocks", {})
+        if not isinstance(entries, dict):
+            return
+        for block_data in entries.values():
+            try:
+                block = Block.from_dict(block_data)
+                if block.has_valid_proof():
+                    self.blocks[block.hash] = block
+            except (ValueError, TypeError, KeyError):
+                continue
 
     def save(self) -> None:
         data = {

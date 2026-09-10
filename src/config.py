@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 
 PROJECT_NAME = "QChain"
@@ -16,6 +17,6 @@ MAX_DIFFICULTY = 8
 GENESIS_TIMESTAMP = 0.0
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.environ.get("QCHAIN_DATA_DIR", BASE_DIR / "data")).expanduser().resolve()
 WALLETS_DIR = DATA_DIR / "wallets"
 CHAIN_PATH = DATA_DIR / "chain.json"

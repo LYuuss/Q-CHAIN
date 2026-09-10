@@ -1,7 +1,6 @@
 import base64
 import os
 from datetime import datetime, timezone
-from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from storage_utils import atomic_write_json, read_json_or_default
+from validation import is_hex, is_integer
 
 KDF_ITERATIONS = 390_000
 
@@ -34,6 +34,10 @@ def load_wallet_json(wallet_path: str | Path) -> dict[str, Any]:
 
 class Wallet:
     def __init__(self, private_key: str, public_key: str):
+        if not is_hex(private_key, 64) or not is_hex(public_key, 64):
+            raise ValueError("Invalid wallet key format.")
+        if CryptoProvider.public_key_from_private(private_key) != public_key:
+            raise ValueError("Wallet private and public keys do not match.")
         self.private_key = private_key
         self.public_key = public_key
         self.address = Transaction.address_from_public_key(public_key)
@@ -83,6 +87,10 @@ class Wallet:
     def _decrypt_private_key(data: dict[str, Any], password: str) -> str:
         salt_hex = data["salt"]
         iterations = data.get("kdf_iterations", KDF_ITERATIONS)
+        if data.get("kdf") != "PBKDF2HMAC-SHA256" or not is_integer(iterations, 100_000, 2_000_000):
+            raise ValueError("Unsupported wallet KDF or iteration count.")
+        if not is_hex(salt_hex, 32):
+            raise ValueError("Invalid wallet encryption salt.")
 
         key = Wallet._derive_encryption_key(
             password=password,
@@ -102,6 +110,10 @@ class Wallet:
     @staticmethod
     def load_metadata(path: str) -> dict[str, Any]:
         data = load_wallet_json(path)
+        if not is_hex(data.get("public_key"), 64):
+            raise ValueError("Invalid wallet public key.")
+        if Transaction.address_from_public_key(data["public_key"]) != data.get("address"):
+            raise ValueError("Wallet address does not match the public key.")
 
         return {
             "address": data["address"],
