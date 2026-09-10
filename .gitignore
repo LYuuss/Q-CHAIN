@@ -4,3 +4,12 @@ __pycache__/
 venv/
 .DS_Store
 notes.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+/data/*
+!/data/README.md
+/qchain_docs_*.zip

@@ -1,288 +1,86 @@
-# QChain Docker Testnet
+# Docker testnet
 
-QChain includes a Docker-based local testnet with three nodes:
+The Compose configuration runs three HTTP nodes on an isolated Docker network.
+Install Docker with the Compose plugin. The host CLI still requires the Python
+runtime dependencies from the root README.
 
-```text
-node1 -> http://127.0.0.1:5001
-node2 -> http://127.0.0.1:5002
-node3 -> http://127.0.0.1:5003
-```
+| Node | Host URL | URL announced to Docker peers | Host state directory |
+| --- | --- | --- | --- |
+| node1 | `http://127.0.0.1:5001` | `http://node1:5000` | `data/docker/node1/` |
+| node2 | `http://127.0.0.1:5002` | `http://node2:5000` | `data/docker/node2/` |
+| node3 | `http://127.0.0.1:5003` | `http://node3:5000` | `data/docker/node3/` |
 
-Inside Docker, nodes communicate through:
+The host ports bind only to loopback. Inside each container, the server listens
+on `0.0.0.0:5000`. Its health check queries the lightweight `/health` endpoint.
 
-```text
-http://node1:5000
-http://node2:5000
-http://node3:5000
-```
-
----
-
-## Start
+## Start and use
 
 ```bash
 bash scripts/start_docker_testnet.sh
+docker compose ps
+python src/qchain.py wallet-create alice
+python src/qchain.py wallet-create bob
+python src/qchain.py wallet-create miner
+python src/qchain.py node-mine 5001 alice
+python src/qchain.py node-send 5001 alice bob 10 --fee 2
+python src/qchain.py node-mine 5002 miner
+python src/qchain.py node-balance 5003 bob
 ```
 
-Manual start:
+The start script builds the image, starts containers, waits for node readiness,
+and connects all six directed peer links. The connect script uses Docker DNS
+names in the peer set; host `127.0.0.1:5002` would refer to the wrong process from
+inside another container.
 
-```bash
-docker compose up -d --build
-bash scripts/connect_docker_nodes.sh
-```
+Wallets stay on the host under `data/wallets/`. Signing happens locally. Nodes
+receive public addresses and signed transactions, never wallet files or passwords.
+The local CLI chain (`mine`, `send`) is separate from the Docker testnet
+(`node-mine`, `node-send`).
 
----
-
-## Status
+## Inspect and restart
 
 ```bash
 bash scripts/status_all.sh
-```
-
-Or:
-
-```bash
-python3 src/qchain.py node-status 5001
-python3 src/qchain.py node-status 5002
-python3 src/qchain.py node-status 5003
-```
-
-Status includes:
-
-```text
-height
-latest_hash
-cumulative_work
-mempool_size
-orphan_pool_size
-side_branch_pool_size
-peers
-valid
-```
-
----
-
-## Mine
-
-```bash
-python3 src/qchain.py node-mine 5001 alice
-```
-
----
-
-## Send Transaction
-
-```bash
-python3 src/qchain.py node-send 5001 alice bob 10 --fee 2
-```
-
----
-
-## Check Mempools
-
-```bash
 bash scripts/mempool_all.sh
+python src/qchain.py node-blocks 5001 --limit 10
+python src/qchain.py node-transactions 5001
+python src/qchain.py node-reorgs 5001
+docker compose logs --tail=100 node1
+docker compose restart node2
+python src/qchain.py node-sync 5002
 ```
 
----
-
-## Mine Transaction
-
-```bash
-python3 src/qchain.py node-mine 5002 miner
-```
-
----
-
-## Check Balances
-
-```bash
-bash scripts/balance_all.sh bob
-bash scripts/balance_all.sh miner
-```
-
----
-
-## Inspect Headers
-
-```bash
-python3 src/qchain.py node-headers 5001
-python3 src/qchain.py node-headers 5002
-python3 src/qchain.py node-headers 5003
-```
-
-Equivalent endpoint:
-
-```text
-GET /headers
-```
-
----
-
-## Inspect Orphan Pools
-
-```bash
-python3 src/qchain.py node-orphans 5001
-python3 src/qchain.py node-orphans 5002
-python3 src/qchain.py node-orphans 5003
-```
-
-Equivalent endpoint:
-
-```text
-GET /orphans
-```
-
----
-
-## Inspect Side Branches
-
-```bash
-python3 src/qchain.py node-side-branches 5001
-python3 src/qchain.py node-side-branches 5002
-python3 src/qchain.py node-side-branches 5003
-```
-
-Equivalent endpoint:
-
-```text
-GET /side-branches
-```
-
-Normal result:
-
-```json
-{
-  "blocks": [],
-  "max_size": 200,
-  "size": 0,
-  "tip_hashes": []
-}
-```
-
----
-
-## Header-First Sync
-
-```bash
-python3 src/qchain.py node-sync 5001
-```
-
-The node:
-
-```text
-checks peers
-compares cumulative work
-downloads headers
-validates headers
-finds common ancestor
-downloads only missing blocks
-rebuilds candidate chain
-adopts if heavier
-processes orphans
-processes side branches
-```
-
-If already synchronized:
-
-```json
-{
-  "downloaded_block_count": 0
-}
-```
-
----
-
-## Fork and Reorg Behavior
-
-QChain now distinguishes:
-
-```text
-direct extension:
-    accepted into main chain
-
-missing parent:
-    stored in orphan pool
-
-known parent but not current tip:
-    stored in side-branch pool
-```
-
-If a side branch becomes heavier, QChain can automatically reorganize.
-
-Example:
-
-```text
-current main chain:
-0 -> 1A
-
-side branch:
-0 -> 1B -> 2B
-
-after reorg:
-0 -> 1B -> 2B
-```
-
----
-
-## Stop
+Chain state, pending transactions, peers, forks, and reorg diagnostics survive
+normal restarts through bind-mounted directories. Sync remains an explicit
+operation; restarting a stale node does not start a background sync loop.
 
 ```bash
 bash scripts/stop_docker_testnet.sh
 ```
 
-or:
+Stopping containers preserves the bind-mounted data and host wallets.
 
-```bash
-docker compose down
-```
+## Back up or reset
 
----
+Stop the testnet before copying `data/docker/` to a separate backup location.
+Back up host wallets independently with `wallet-backup`.
 
-## Reset
+For an intentionally fresh Docker chain:
 
 ```bash
 bash scripts/reset_docker_testnet.sh
 ```
 
-This removes Docker node data under:
+**This deletes `data/docker/`, including all three nodes' chains, balances,
+pending transactions, pools, and journals.** It rebuilds/restarts/reconnects the
+nodes. Host wallets under `data/wallets/` and the local CLI chain remain separate.
 
-```text
-data/docker/
-```
+Do not use reset to repair valuable experimental history: preserve the files
+and follow [storage recovery](storage-layer.md) instead.
 
-It does not delete wallets in:
+## Validation
 
-```text
-data/wallets/
-```
-
----
-
-## Logs
-
-```bash
-docker compose logs -f
-```
-
-For one node:
-
-```bash
-docker compose logs -f node1
-```
-
----
-
-## Common Docker Issue
-
-Inside Docker, `127.0.0.1` means the current container.
-
-Use internal service names:
-
-```text
-http://node1:5000
-http://node2:5000
-http://node3:5000
-```
-
-The `--advertised-url` option makes each node announce the correct Docker-internal URL.
+GitHub Actions builds the image, starts healthy nodes, and connects their peers.
+The standalone `python scripts/smoke_testnet.py` exercises real HTTP discovery,
+broadcasts, restart, balances, and header-first synchronization without Docker.
+See [validation notes](validation.md) for what was actually run for this milestone.

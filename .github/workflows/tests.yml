@@ -2,16 +2,21 @@ name: QChain Tests
 
 on:
   push:
-    branches:
-      - main
   pull_request:
-    branches:
-      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   tests:
-    name: Run pytest
+    name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
 
     steps:
       - name: Checkout repository
@@ -20,18 +25,32 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: "pip"
 
-      - name: Install runtime dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Install test dependencies
-        run: |
-          pip install -r requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
         run: |
           python -m pytest
+
+      - name: Exercise real HTTP nodes
+        run: python scripts/smoke_testnet.py
+
+  docker:
+    name: Docker testnet startup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and start healthy nodes
+        run: docker compose up -d --build --wait
+      - name: Connect peers
+        run: bash scripts/connect_docker_nodes.sh
+      - name: Show logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop nodes
+        if: always()
+        run: docker compose down

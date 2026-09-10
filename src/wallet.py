@@ -1,8 +1,6 @@
 import base64
-import json
 import os
 from datetime import datetime, timezone
-from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -11,12 +9,35 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from crypto_provider import CryptoProvider
 from transaction import Transaction
 
+from pathlib import Path
+from typing import Any
+
+from storage_utils import atomic_write_json, read_json_or_default
+from validation import is_hex, is_integer
 
 KDF_ITERATIONS = 390_000
 
+def save_wallet_json(wallet_path: str | Path, data: dict[str, Any]) -> None:
+    atomic_write_json(wallet_path, data)
+
+
+def load_wallet_json(wallet_path: str | Path) -> dict[str, Any]:
+    data = read_json_or_default(
+        wallet_path,
+        default={},
+    )
+
+    if not data:
+        raise ValueError(f"Wallet file is missing or invalid: {wallet_path}")
+
+    return data
 
 class Wallet:
     def __init__(self, private_key: str, public_key: str):
+        if not is_hex(private_key, 64) or not is_hex(public_key, 64):
+            raise ValueError("Invalid wallet key format.")
+        if CryptoProvider.public_key_from_private(private_key) != public_key:
+            raise ValueError("Wallet private and public keys do not match.")
         self.private_key = private_key
         self.public_key = public_key
         self.address = Transaction.address_from_public_key(public_key)
@@ -66,6 +87,10 @@ class Wallet:
     def _decrypt_private_key(data: dict[str, Any], password: str) -> str:
         salt_hex = data["salt"]
         iterations = data.get("kdf_iterations", KDF_ITERATIONS)
+        if data.get("kdf") != "PBKDF2HMAC-SHA256" or not is_integer(iterations, 100_000, 2_000_000):
+            raise ValueError("Unsupported wallet KDF or iteration count.")
+        if not is_hex(salt_hex, 32):
+            raise ValueError("Invalid wallet encryption salt.")
 
         key = Wallet._derive_encryption_key(
             password=password,
@@ -84,8 +109,11 @@ class Wallet:
 
     @staticmethod
     def load_metadata(path: str) -> dict[str, Any]:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = load_wallet_json(path)
+        if not is_hex(data.get("public_key"), 64):
+            raise ValueError("Invalid wallet public key.")
+        if Transaction.address_from_public_key(data["public_key"]) != data.get("address"):
+            raise ValueError("Wallet address does not match the public key.")
 
         return {
             "address": data["address"],
@@ -100,8 +128,7 @@ class Wallet:
 
     @staticmethod
     def load(path: str, password: str | None = None) -> "Wallet":
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = load_wallet_json(path)
 
         encrypted = data.get("encrypted", False)
 
@@ -149,8 +176,7 @@ class Wallet:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2)
+        save_wallet_json(path, data)
 
     @staticmethod
     def load_or_create(path: str, password: str) -> "Wallet":

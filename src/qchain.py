@@ -2,7 +2,9 @@ import argparse
 import getpass
 import json
 import urllib.error
-import urllib.request
+import re
+import sys
+from pathlib import Path
 from typing import Any
 
 from blockchain import Blockchain
@@ -18,71 +20,10 @@ from config import (
 )
 
 
-class HttpJsonError(Exception):
-    def __init__(self, status_code: int, body: dict[str, Any] | None, raw_body: str):
-        self.status_code = status_code
-        self.body = body
-        self.raw_body = raw_body
-
-        message = f"HTTP {status_code}"
-
-        if body is not None:
-            message += f": {body}"
-        elif raw_body:
-            message += f": {raw_body}"
-
-        super().__init__(message)
-
-
-def parse_json_body(raw_body: str) -> dict[str, Any] | None:
-    try:
-        return json.loads(raw_body)
-    except json.JSONDecodeError:
-        return None
-
-
-def fetch_json(url: str, timeout: int = 5) -> dict[str, Any]:
-    request_obj = urllib.request.Request(
-        url=url,
-        method="GET",
-        headers={
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body)
-
-    except urllib.error.HTTPError as error:
-        raw_body = error.read().decode("utf-8")
-        json_body = parse_json_body(raw_body)
-        raise HttpJsonError(error.code, json_body, raw_body) from error
-
-
-def post_json(url: str, payload: dict[str, Any], timeout: int = 5) -> dict[str, Any]:
-    body = json.dumps(payload).encode("utf-8")
-
-    request_obj = urllib.request.Request(
-        url=url,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(request_obj, timeout=timeout) as response:
-            response_body = response.read().decode("utf-8")
-            return json.loads(response_body)
-
-    except urllib.error.HTTPError as error:
-        raw_body = error.read().decode("utf-8")
-        json_body = parse_json_body(raw_body)
-        raise HttpJsonError(error.code, json_body, raw_body) from error
+from http_client import fetch_json, post_json, HttpJsonError
+from storage_utils import atomic_write_json
+from wallet import load_wallet_json
+from validation import is_address
 
 
 def print_json(data: dict[str, Any]) -> None:
@@ -112,6 +53,8 @@ def load_chain() -> Blockchain:
 
 def wallet_path(name: str):
     clean_name = name.lower().strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", clean_name):
+        raise ValueError("Wallet names must contain 1–64 letters, digits, underscores, or hyphens.")
     return WALLETS_DIR / f"{clean_name}.json"
 
 
@@ -199,11 +142,10 @@ def list_wallets() -> list[tuple[str, dict]]:
 
 
 def resolve_receiver_address(receiver: str) -> str:
+    if is_address(receiver):
+        return receiver
     if wallet_exists(receiver):
         return load_wallet_metadata(receiver)["address"]
-
-    if len(receiver) == 40:
-        return receiver
 
     raise ValueError(
         f"Unknown receiver '{receiver}'. "
@@ -335,10 +277,12 @@ def command_mine(args) -> None:
 
     miner_address = metadata["address"]
 
-    chain.mine_pending_transactions(
+    added = chain.mine_pending_transactions(
         miner_address=miner_address,
         max_transactions=args.max_tx,
     )
+    if not added:
+        raise ValueError("Mining failed.")
 
     print()
     print(f"Miner: {args.miner}")
@@ -380,7 +324,7 @@ def command_send(args) -> None:
         print(f"Fee: {args.fee} {COIN_NAME}")
         print(f"Nonce: {nonce}")
     else:
-        print("Transaction rejected.")
+        raise ValueError("Transaction rejected.")
 
 
 def command_mempool(args) -> None:
@@ -394,7 +338,7 @@ def command_validate(args) -> None:
     if chain.is_valid():
         print("Blockchain is valid.")
     else:
-        print("Blockchain is invalid.")
+        raise ValueError("Blockchain is invalid.")
 
 
 def command_node_status(args) -> None:
@@ -415,7 +359,7 @@ def command_node_orphans(args) -> None:
 
 def command_node_sync(args) -> None:
     node_url = normalize_node_url(args.node)
-    response = post_json(f"{node_url}/sync", {})
+    response = post_json(f"{node_url}/sync", {}, timeout=300)
     print_json(response)
 
 def command_node_connect(args) -> None:
@@ -458,7 +402,7 @@ def command_node_mine(args) -> None:
     if args.max_tx is not None:
         payload["max_transactions"] = args.max_tx
 
-    response = post_json(f"{node_url}/mine", payload)
+    response = post_json(f"{node_url}/mine", payload, timeout=300)
     print_json(response)
 
 
@@ -507,9 +451,7 @@ def command_node_send(args) -> None:
 
 def command_node_balance(args) -> None:
     node_url = normalize_node_url(args.node)
-    metadata = load_wallet_metadata(args.wallet)
-
-    address = metadata["address"]
+    address = resolve_receiver_address(args.wallet)
 
     response = fetch_json(f"{node_url}/balances/{address}")
 
@@ -544,6 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=f"{PROJECT_NAME} command line interface"
     )
+    parser.add_argument("--data-dir", type=Path, help="Local chain and wallet directory (before the command)")
 
     subparsers = parser.add_subparsers(
         dest="command",
@@ -709,17 +652,144 @@ def build_parser() -> argparse.ArgumentParser:
     )
     node_side_branches_parser.add_argument("node", help="Node port or URL, example: 5001")
     node_side_branches_parser.set_defaults(func=command_node_side_branches)
+
+    node_transaction_parser = subparsers.add_parser(
+        "node-transaction",
+        help="Show a transaction by hash from an HTTP node",
+    )
+    node_transaction_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_transaction_parser.add_argument("transaction_hash", help="Transaction hash")
+    node_transaction_parser.set_defaults(func=command_node_transaction)
+
+    node_address_transactions_parser = subparsers.add_parser(
+        "node-address-transactions",
+        help="Show transaction history for an address from an HTTP node",
+    )
+    node_address_transactions_parser.add_argument("node", help="Node port or URL, example: 5001")
+    node_address_transactions_parser.add_argument("address", help="Address to inspect")
+    node_address_transactions_parser.set_defaults(func=command_node_address_transactions)
+
+    node_discover_peers_parser = subparsers.add_parser(
+        "node-discover-peers",
+        help="Discover peers known by this node's current peers",
+    )
+    node_discover_peers_parser.add_argument(
+        "node",
+        help="Node port or URL, example: 5001",
+    )
+    node_discover_peers_parser.set_defaults(func=command_node_discover_peers)
     
+    for name, endpoint, description in (
+        ("node-chain", "/chain", "Show the full node chain"),
+        ("node-peers", "/peers", "Show connected peers"),
+        ("node-blocks", "/blocks", "List confirmed blocks"),
+        ("node-transactions", "/transactions", "List pending and confirmed transactions"),
+        ("node-reorgs", "/reorgs", "Show persistent reorganization history"),
+    ):
+        command = subparsers.add_parser(name, help=description)
+        command.add_argument("node", help="Node port or URL")
+        command.add_argument("--limit", type=int, default=50)
+        command.add_argument("--offset", type=int, default=0)
+        command.set_defaults(func=command_node_list, endpoint=endpoint)
+
+    block_command = subparsers.add_parser("node-block", help="Look up a block by height or hash")
+    block_command.add_argument("node")
+    block_command.add_argument("identifier")
+    block_command.set_defaults(func=command_node_block)
+
+    for name, function, help_text in (
+        ("wallet-info", command_wallet_info, "Show public wallet metadata"),
+        ("wallet-password", command_wallet_password, "Change the wallet password"),
+    ):
+        command = subparsers.add_parser(name, help=help_text)
+        command.add_argument("name")
+        command.set_defaults(func=function)
+    backup = subparsers.add_parser("wallet-backup", help="Back up an encrypted wallet without overwriting files")
+    backup.add_argument("name")
+    backup.add_argument("destination", type=Path)
+    backup.set_defaults(func=command_wallet_backup)
+    restore = subparsers.add_parser("wallet-import", help="Validate and import an encrypted wallet backup")
+    restore.add_argument("source", type=Path)
+    restore.add_argument("name")
+    restore.set_defaults(func=command_wallet_import)
     return parser
+
+
+def command_node_list(args):
+    endpoint = f"{args.endpoint}?limit={args.limit}&offset={args.offset}"
+    print_json(fetch_json(normalize_node_url(args.node) + endpoint))
+
+
+def command_node_block(args):
+    if args.identifier.isdigit() and len(args.identifier) < 64:
+        endpoint = f"/blocks/height/{int(args.identifier)}"
+    elif re.fullmatch(r"[0-9a-f]{64}", args.identifier):
+        endpoint = f"/blocks/{args.identifier}"
+    else:
+        raise ValueError("Expected a block height or 64-character hexadecimal hash.")
+    print_json(fetch_json(normalize_node_url(args.node) + endpoint))
+
+
+def command_wallet_info(args):
+    print_json(load_wallet_metadata(args.name))
+
+
+def command_wallet_password(args):
+    wallet = load_wallet_for_signing(args.name)
+    password = prompt_password("new password", confirm=True)
+    wallet.save(str(wallet_path(args.name)), password=password)
+    print("Wallet password changed.")
+
+
+def command_wallet_backup(args):
+    source = wallet_path(args.name)
+    if not Wallet.is_encrypted(str(source)):
+        raise ValueError("Encrypt the wallet with wallet-encrypt before backing it up.")
+    atomic_write_json(args.destination, load_wallet_json(source), overwrite=False)
+    print(f"Encrypted wallet backup saved to {args.destination}.")
+
+
+def command_wallet_import(args):
+    destination = wallet_path(args.name)
+    if destination.exists():
+        raise ValueError("A wallet with this name already exists.")
+    if not Wallet.is_encrypted(str(args.source)):
+        raise ValueError("Only encrypted wallet backups can be imported.")
+    password = prompt_password(args.name)
+    wallet = Wallet.load(str(args.source), password=password)
+    atomic_write_json(destination, load_wallet_json(args.source), overwrite=False)
+    print(f"Wallet imported. Address: {wallet.address}")
 
 def command_node_side_branches(args) -> None:
     node_url = normalize_node_url(args.node)
     response = fetch_json(f"{node_url}/side-branches")
     print_json(response)
 
-def main() -> None:
+def command_node_transaction(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/transactions/{args.transaction_hash}")
+    print_json(response)
+
+
+def command_node_address_transactions(args) -> None:
+    node_url = normalize_node_url(args.node)
+    response = fetch_json(f"{node_url}/addresses/{args.address}/transactions")
+    print_json(response)
+
+def command_node_discover_peers(args) -> None:
+    node_url = normalize_node_url(args.node)
+
+    print_json(post_json(f"{node_url}/peers/discover", {}, timeout=120))
+
+
+def main() -> int:
+    global WALLETS_DIR, CHAIN_PATH
     parser = build_parser()
     args = parser.parse_args()
+    if args.data_dir is not None:
+        directory = args.data_dir.expanduser().resolve()
+        WALLETS_DIR = directory / "wallets"
+        CHAIN_PATH = directory / "chain.json"
 
     try:
         args.func(args)
@@ -731,10 +801,16 @@ def main() -> None:
             print_json(error.body)
         elif error.raw_body:
             print(error.raw_body)
+        return 1
 
-    except (ValueError, urllib.error.URLError, TimeoutError) as error:
-        print(f"Error: {error}")
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled.", file=sys.stderr)
+        return 130
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

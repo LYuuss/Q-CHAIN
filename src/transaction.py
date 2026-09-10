@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
 from crypto_provider import CryptoProvider
+from validation import is_address, is_hex, is_integer
 
 
 COINBASE_SENDER = "COINBASE"
@@ -83,6 +84,8 @@ class Transaction:
         )
 
     def verify(self) -> bool:
+        if not self.has_valid_fields():
+            return False
         if self.is_coinbase():
             return self.signature is None
 
@@ -95,6 +98,17 @@ class Transaction:
             self.signature,
         )
 
+    def has_valid_fields(self) -> bool:
+        if not is_address(self.receiver):
+            return False
+        if not is_integer(self.amount, 1) or not is_integer(self.nonce, 1):
+            return False
+        if not is_integer(self.fee):
+            return False
+        if self.is_coinbase():
+            return self.fee == 0 and self.signature is None
+        return is_hex(self.sender, 64) and is_hex(self.signature, 128)
+
     def to_dict(self) -> Dict[str, Any]:
         data = self.payload()
         data["signature"] = self.signature
@@ -102,7 +116,12 @@ class Transaction:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "Transaction":
-        return Transaction(
+        if not isinstance(data, dict):
+            raise ValueError("Transaction must be an object.")
+        required = {"sender", "receiver", "amount", "nonce"}
+        if not required <= data.keys():
+            raise ValueError("Transaction is missing required fields.")
+        transaction = Transaction(
             sender=data["sender"],
             receiver=data["receiver"],
             amount=data["amount"],
@@ -110,3 +129,6 @@ class Transaction:
             fee=data.get("fee", 0),
             signature=data.get("signature"),
         )
+        if not transaction.has_valid_fields():
+            raise ValueError("Invalid transaction fields, address, or signature format.")
+        return transaction

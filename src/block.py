@@ -4,12 +4,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from validation import MAX_BLOCK_TRANSACTIONS, is_hex, validate_header
+
 
 def canonical_json(data: Any) -> str:
     return json.dumps(
         data,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     )
 
 
@@ -128,6 +131,7 @@ class Block:
         return self.merkle_root == compute_merkle_root(self.transactions)
 
     def mine(self) -> None:
+        validate_header(self.to_dict()["header"])
         if not self.verify_merkle_root():
             self.header.merkle_root = compute_merkle_root(self.transactions)
 
@@ -157,7 +161,17 @@ class Block:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Block":
-        header = data["header"]
+        if not isinstance(data, dict):
+            raise ValueError("Block must be an object.")
+        header = data.get("header")
+        validate_header(header)
+        if not is_hex(data.get("hash"), 64):
+            raise ValueError("Invalid block hash format.")
+        transactions = data.get("transactions")
+        if not isinstance(transactions, list) or len(transactions) > MAX_BLOCK_TRANSACTIONS:
+            raise ValueError("Invalid block transaction list or transaction limit exceeded.")
+        if any(not isinstance(tx, dict) for tx in transactions):
+            raise ValueError("Each block transaction must be an object.")
 
         block = Block(
             index=header["index"],
@@ -175,3 +189,16 @@ class Block:
             raise ValueError("Invalid block: Merkle root does not match transactions.")
 
         return block
+
+    def has_valid_proof(self) -> bool:
+        try:
+            validate_header(self.to_dict()["header"])
+            return (
+                is_hex(self.hash, 64)
+                and len(self.transactions) <= MAX_BLOCK_TRANSACTIONS
+                and self.verify_merkle_root()
+                and self.hash == self.compute_hash()
+                and self.hash.startswith("0" * self.difficulty)
+            )
+        except (ValueError, TypeError, OverflowError):
+            return False
