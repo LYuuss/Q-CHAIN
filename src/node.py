@@ -180,7 +180,13 @@ def extract_peer_url(payload: dict) -> str | None:
 def owned_app(data_dir: Path, advertised_url: str | None = None):
     """Hold directory ownership around startup and the entire server lifetime."""
     with state_directory_lock(data_dir) as directory:
-        yield create_app(directory, advertised_url)
+        app = create_app(directory, advertised_url)
+        try:
+            yield app
+        finally:
+            # Stop local mutations before releasing the OS lock, even if a
+            # request is still waiting on a remote peer.
+            app.extensions["qchain_close_state"]()
 
 
 def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
@@ -247,8 +253,18 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BYTES
     state_lock = RLock()
     persistence_failed = False
+    closing = False
+
+    def close_state():
+        nonlocal closing
+        with state_lock:
+            closing = True
+
+    app.extensions["qchain_close_state"] = close_state
 
     def unavailable():
+        if closing:
+            return jsonify({"error": "Node is stopping.", "status": "stopping"}), 503
         return jsonify({"error": "State persistence failed; node quarantined. Check storage and restart.",
                         "status": "persistence_failed"}), 503
 
@@ -256,15 +272,16 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     def persistence_error(error):
         nonlocal persistence_failed
         # All request-side writes happen under state_lock. Keep it until teardown.
-        persistence_failed = True
-        app.logger.error("Node quarantined: %s", error)
+        if not closing:
+            persistence_failed = True
+            app.logger.error("Node quarantined: %s", error)
         return unavailable()
 
     @app.before_request
     def lock_state():
         state_lock.acquire()
         g.state_locked = True
-        if persistence_failed:
+        if persistence_failed or closing:
             return unavailable()
         if request.method == "POST" and (request.content_length or request.is_json):
             payload = request.get_json(silent=True)
@@ -297,8 +314,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
             if locked:
                 state_lock.acquire()
                 # Another request may have failed while this one was waiting on I/O.
-                if persistence_failed:
-                    raise StatePersistenceError("Node is quarantined after a concurrent persistence failure.")
+                if persistence_failed or closing:
+                    raise StatePersistenceError("Node became unavailable during network I/O.")
 
     def add_peer(peer_url: str) -> tuple[bool, str, str | None]:
         normalized_peer = normalize_peer_url(peer_url)
