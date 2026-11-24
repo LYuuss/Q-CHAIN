@@ -85,6 +85,8 @@ indexes and the mempool mirror. Check the resulting tip/transaction before
 retrying. No successful local mutation is reported after quarantine; previously
 sent network messages cannot be recalled. Multi-file transactions, durable
 reorg diagnostics and complete crash reconciliation remain Mission 002-C.
+See the [transactional storage design](transactional-storage-design.md) for the
+proposed migration. The JSON backend remains active.
 
 ## Corrupt or missing chain files
 

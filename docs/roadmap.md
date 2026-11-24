@@ -51,13 +51,18 @@ non-overwriting publication, with regression tests for competing creators and
 publication failures. Intentional password/encryption updates remain explicit.
 Mission 002-B addresses A10 for supported process entry points and mitigates
 A03 with explicit fail-closed persistence handling and restart recovery.
-Multi-file transactionality (A03 / Mission 002-C), and A11 (wallet schema/import
-snapshot validation) remain open. See the audit for the original finding.
+Mission 002-C design: see [transactional storage design](transactional-storage-design.md)
+for the proposed SQLite boundary, draft schema, reversible migration and
+acceptance gates. This is a design milestone, not a backend switch. Runtime
+multi-file transactionality (A03) and A11 (wallet schema/import snapshot
+validation) remain open. See the audit for the original finding.
 
 A01/A02 block deployment to an untrusted network. Until then, keep the
 trusted local testnet boundary. Each mission may be split into small PRs
 against the development branch; protocol changes require separate approval.
-The maintainer controls the stable release and merge to main.
+The maintainer controls the stable release and merge to main. Authorized
+agents may merge their own approved-scope PRs into dev/v0.2 under AGENTS.md's
+CI and review gate.
 
 ## Research tracks
 

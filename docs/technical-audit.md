@@ -58,7 +58,10 @@ Follow-up (Mission 002-B): state snapshot errors propagate and quarantine the
 node; the local CLI exits nonzero. Restart reloads authoritative state and
 rebuilds derived indexes. The commit outcome can be uncertain if an auxiliary
 write or post-replacement directory fsync fails; multi-file transactionality
-and complete crash reconciliation remain open in Mission 002-C.
+and complete crash reconciliation remain open in Mission 002-C. The
+[transactional storage design](transactional-storage-design.md) specifies
+the proposed boundary and migration gates; no runtime SQLite migration is
+claimed.
 
 Evidence: src/blockchain.py:211–270, 426–432, 717–736; src/node.py:423–447, 597–605, 967–970; src/storage_utils.py:atomic_write_json.
 Atomicity applies to each file separately. In-memory mutations precede saves; failures can leave a running node with state that was not durably committed. A crash after authoritative chain save but before derived indexes, fork pools or reorg history updates can leave inconsistent auxiliary state. Startup rebuilds the transaction index and mempool mirror, which mitigates part of this risk.
