@@ -13,12 +13,38 @@ Never describe it as a production-ready or audited cryptocurrency.
 - Base each task on the current `dev/v0.2` (or the explicitly designated
   development branch). Create a dedicated `feature/`, `fix/`, `test/`,
   `docs/` or `chore/` branch. Keep changes narrowly scoped.
-- Never push directly to `main` or the development branch, merge a PR, change
-  branch protection, publish/move tags, force-push or rewrite history without
-  explicit maintainer authorization. Do not bypass branch protections.
+- Never push directly to `main` or the development branch, change branch
+  protection, publish/move tags, force-push or rewrite history without explicit
+  maintainer authorization. Do not bypass branch protections.
 - Open a PR against the designated development branch. Include the problem,
   approach, trade-offs, files affected, compatibility, test evidence, and
-  remaining risks. Leave merging to the maintainer.
+  remaining risks.
+- **Delegated autonomous merge (QChain only):** the maintainer authorizes the
+  agent to merge its own PRs into `dev/v0.2` for approved missions, without
+  further confirmation, only after the merge gate below is satisfied. This
+  does not authorize merging other contributors' PRs or targeting other
+  branches. The maintainer retains control of main, releases, major consensus
+  or wire-format changes, and irreversible data migrations.
+- Before merging, confirm the PR is open, non-draft, owned by the agent's
+  authorized work, targets exactly `dev/v0.2`, is mergeable, contains only the
+  approved scope, and has no unresolved review requests or conflicts. Verify
+  the current head SHA, base SHA and all applicable CI checks: QChain Tests
+  on Python 3.11 and 3.12 (pytest and real HTTP smoke) and Docker startup,
+  plus any additional required checks. Require completed success, not merely
+  a green historical run or a pending/skipped check. If the base advanced,
+  reconcile and revalidate the proposed merge before proceeding. Merge with
+  the expected head SHA and verify GitHub's result and the new base.
+- Never bypass a failed or missing check, lower test requirements or approve
+  your own work in lieu of a required independent review. If GitHub rejects
+  the merge, stop rather than bypassing protections.
+- After a successful merge, report its commit and validation evidence; move
+  to the next approved mission only if the execution budget and scope allow.
+  At most three correction attempts per persistent CI failure; stop on
+  repeated failures, pending CI at the end of the available execution,
+  unresolved architectural/security issues, incompatible or irreversible
+  migrations, major protocol decisions, or the end of the approved scope.
+  Do not infer authorization for unrelated roadmap items or claim background
+  execution. Resume from repository state in a later session if necessary.
 - Do not include credentials, private keys, generated state, personal data,
   wallet backups or unrelated changes. Never print secret key material.
 
@@ -44,8 +70,9 @@ Never describe it as a production-ready or audited cryptocurrency.
   explicit migration/network-version decision. Add deterministic test vectors.
 - Protect shared state, never hold the state lock during unbounded network I/O,
   recheck state after releasing the lock, and do not treat individual atomic
-  file writes as multi-file transactions. One writer per data directory until
-  cross-process coordination is implemented.
+  file writes as multi-file transactions. Respect the OS-backed cooperative
+  writer ownership introduced in Mission 002-B; direct library callers must
+  coordinate access. Quarantine failed persistence and recover from disk.
 - Keep the trusted-local-network deployment boundary. Changes affecting
   authentication, outbound requests, key management or protocol safety require
   explicit security review. Do not test against third-party/live systems.
@@ -90,4 +117,5 @@ are implemented. See [technical audit](docs/technical-audit.md) and
 - Existing behavior preserved unless the approved specification changes it.
 - New regression coverage and truthful validation evidence.
 - Documentation aligned with code and known limitations.
-- PR open for maintainer review; no unauthorized merge or release.
+- PR open for review, or merged into dev/v0.2 under the delegated merge gate;
+  no unauthorized merge or release. Report any pending validation or blockers.
