@@ -21,7 +21,8 @@ from config import (
 
 
 from http_client import fetch_json, post_json, HttpJsonError
-from storage_utils import atomic_write_json
+from storage_utils import StatePersistenceError, atomic_write_json
+from state_lock import state_directory_lock
 from wallet import load_wallet_json
 from validation import is_address
 
@@ -797,7 +798,13 @@ def main() -> int:
         CHAIN_PATH = directory / "chain.json"
 
     try:
-        args.func(args)
+        if args.command in {"status", "balance", "mine", "send", "mempool", "validate"}:
+            # Even read commands may initialize a missing chain. Hold ownership
+            # over load, mutation and commit, not just the final atomic write.
+            with state_directory_lock(Path(CHAIN_PATH).parent):
+                args.func(args)
+        else:
+            args.func(args)
 
     except HttpJsonError as error:
         print(f"HTTP error: {error.status_code}")
@@ -808,7 +815,7 @@ def main() -> int:
             print(error.raw_body)
         return 1
 
-    except (ValueError, OSError, KeyError, TypeError) as error:
+    except (ValueError, OSError, KeyError, TypeError, StatePersistenceError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     except (EOFError, KeyboardInterrupt):

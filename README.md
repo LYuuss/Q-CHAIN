@@ -137,8 +137,9 @@ to select an isolated local chain and wallet directory.
 - [Validation and release notes](docs/validation.md)
 
 The node is intended for a trusted local network. It has no authentication,
-public-network abuse protection, or cross-process data locking. Run one node
-process per data directory. Existing demo keys in Git history are public; create
+public-network abuse protection, or multi-file transactions. Supported node and
+local-chain CLI entry points enforce exclusive directory ownership; a persistence
+failure quarantines the node until restart. Run one node process per directory. Existing demo keys in Git history are public; create
 your own experiment wallets. Never put real funds or production keys in QChain.
 
 Licensed under [MIT](LICENSE).

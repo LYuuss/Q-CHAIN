@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-def atomic_write_json(path: str | Path, data: dict[str, Any], indent: int = 2, *, overwrite: bool = True) -> None:
+def atomic_write_json(path: str | Path, data: dict[str, Any], indent: int = 2, *, overwrite: bool = True, strict_directory_sync: bool = False) -> None:
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -43,7 +43,10 @@ def atomic_write_json(path: str | Path, data: dict[str, Any], indent: int = 2, *
                 os.close(directory_fd)
 
         except OSError:
-            pass
+            # POSIX state commits require a durable directory entry. Windows
+            # does not expose a portable directory fsync through os.open.
+            if strict_directory_sync and os.name == "posix":
+                raise
 
     except Exception:
         if temp_path is not None and temp_path.exists():
@@ -81,3 +84,17 @@ def read_json_strict(path: str | Path) -> dict[str, Any]:
         return data
     except (ValueError, UnicodeError) as error:
         raise ValueError(f"Invalid state file {path}; restore a backup before restarting.") from error
+
+
+class StatePersistenceError(RuntimeError):
+    """A node-state write failed; the commit outcome may be uncertain."""
+
+
+def write_state_json(path: str | Path, data: dict[str, Any]) -> None:
+    """Commit a state snapshot or raise an error that peer handlers cannot swallow."""
+    try:
+        atomic_write_json(path, data, strict_directory_sync=True)
+    except (OSError, ValueError, TypeError, OverflowError) as error:
+        raise StatePersistenceError(
+            f"State persistence failed for {Path(path).name}; stop and restart after checking storage."
+        ) from error

@@ -49,7 +49,9 @@ maintainer review; it does not mark any additional feature as implemented.
 Mission 002-A addresses A04: exclusive wallet creation reuses atomic
 non-overwriting publication, with regression tests for competing creators and
 publication failures. Intentional password/encryption updates remain explicit.
-A03/A10 (state durability and writer ownership) and A11 (wallet schema/import
+Mission 002-B addresses A10 for supported process entry points and mitigates
+A03 with explicit fail-closed persistence handling and restart recovery.
+Multi-file transactionality (A03 / Mission 002-C), and A11 (wallet schema/import
 snapshot validation) remain open. See the audit for the original finding.
 
 A01/A02 block deployment to an untrusted network. Until then, keep the

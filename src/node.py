@@ -1,4 +1,6 @@
 import argparse
+import sys
+from contextlib import contextmanager
 import json
 import re
 import time
@@ -23,7 +25,8 @@ from config import (
 from transaction import Transaction
 from block_store import BlockStore
 from transaction_index import TransactionIndex
-from storage_utils import atomic_write_json, read_json_or_default, read_json_strict
+from storage_utils import StatePersistenceError, write_state_json, read_json_or_default, read_json_strict
+from state_lock import state_directory_lock
 from http_client import fetch_json, post_json, HttpJsonError
 from validation import (
     is_address,
@@ -55,7 +58,7 @@ def save_peers(peers_path: Path, peers: set[str]) -> None:
         "peers": sorted(peers),
     }
 
-    atomic_write_json(peers_path, data)
+    write_state_json(peers_path, data)
 
 def load_block_pool(pool_path: Path) -> dict[str, Block]:
     data = read_json_or_default(
@@ -89,7 +92,7 @@ def save_block_pool(pool_path: Path, blocks: dict[str, Block]) -> None:
         }
     }
 
-    atomic_write_json(pool_path, data)
+    write_state_json(pool_path, data)
 
 def load_transaction_pool(pool_path: Path) -> list[Transaction]:
     data = read_json_or_default(
@@ -121,7 +124,7 @@ def save_transaction_pool(pool_path: Path, transactions: list[Transaction]) -> N
         ]
     }
 
-    atomic_write_json(pool_path, data)
+    write_state_json(pool_path, data)
 
 def should_trigger_sync(message: str) -> bool:
     lower_message = message.lower()
@@ -173,7 +176,21 @@ def extract_peer_url(payload: dict) -> str | None:
 
     return normalize_peer_url(peer_url)
 
+@contextmanager
+def owned_app(data_dir: Path, advertised_url: str | None = None):
+    """Hold directory ownership around startup and the entire server lifetime."""
+    with state_directory_lock(data_dir) as directory:
+        app = create_app(directory, advertised_url)
+        try:
+            yield app
+        finally:
+            # Stop local mutations before releasing the OS lock, even if a
+            # request is still waiting on a remote peer.
+            app.extensions["qchain_close_state"]()
+
+
 def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
+    """Low-level factory; server hosts must hold state_directory_lock (see owned_app)."""
     normalized_advertised_url = normalize_peer_url(advertised_url)
     if advertised_url is not None and normalized_advertised_url is None:
         raise ValueError("Invalid advertised URL: expected an HTTP(S) origin.")
@@ -228,21 +245,49 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     if migrate_mempool:
         chain.mempool = load_transaction_pool(mempool_path)
         chain.clean_mempool()
-        chain.save_to_disk()
+    # Persist the canonical/migrated snapshot only while owning the writer directory.
+    chain.save_to_disk()
     save_transaction_pool(mempool_path, chain.mempool)
 
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BYTES
     state_lock = RLock()
+    persistence_failed = False
+    closing = False
+
+    def close_state():
+        nonlocal closing
+        with state_lock:
+            closing = True
+
+    app.extensions["qchain_close_state"] = close_state
+
+    def unavailable():
+        if closing:
+            return jsonify({"error": "Node is stopping.", "status": "stopping"}), 503
+        return jsonify({"error": "State persistence failed; node quarantined. Check storage and restart.",
+                        "status": "persistence_failed"}), 503
+
+    @app.errorhandler(StatePersistenceError)
+    def persistence_error(error):
+        nonlocal persistence_failed
+        # All request-side writes happen under state_lock. Keep it until teardown.
+        if not closing:
+            persistence_failed = True
+            app.logger.error("Node quarantined: %s", error)
+        return unavailable()
 
     @app.before_request
     def lock_state():
+        state_lock.acquire()
+        g.state_locked = True
+        if persistence_failed or closing:
+            return unavailable()
         if request.method == "POST" and (request.content_length or request.is_json):
             payload = request.get_json(silent=True)
             if not isinstance(payload, dict):
                 return jsonify({"error": "Request body must be a JSON object."}), 400
-        state_lock.acquire()
-        g.state_locked = True
+        return None
 
     @app.teardown_request
     def unlock_state(error=None):
@@ -268,6 +313,9 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         finally:
             if locked:
                 state_lock.acquire()
+                # Another request may have failed while this one was waiting on I/O.
+                if persistence_failed or closing:
+                    raise StatePersistenceError("Node became unavailable during network I/O.")
 
     def add_peer(peer_url: str) -> tuple[bool, str, str | None]:
         normalized_peer = normalize_peer_url(peer_url)
@@ -444,7 +492,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "reason": reason, "timestamp": time.time(),
             })
             del reorg_history[:-100]
-            atomic_write_json(reorg_history_path, {"reorgs": reorg_history})
+            write_state_json(reorg_history_path, {"reorgs": reorg_history})
         return result
 
     def get_sorted_peers_by_work() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1782,7 +1830,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
 
     if args.data_dir is None:
@@ -1792,25 +1840,22 @@ def main() -> None:
 
     advertised_url = args.advertised_url
 
-    app = create_app(
-        data_dir=data_dir,
-        advertised_url=advertised_url,
-    )
+    try:
+        with owned_app(data_dir, advertised_url) as app:
+            print(f"{PROJECT_NAME} node")
+            print("-" * (len(PROJECT_NAME) + 5))
+            print(f"Host: {args.host}")
+            print(f"Port: {args.port}")
+            print(f"Advertised URL: {advertised_url}")
+            print(f"Data directory: {data_dir}")
+            print(f"Status: http://{args.host}:{args.port}/status")
 
-    print(f"{PROJECT_NAME} node")
-    print("-" * (len(PROJECT_NAME) + 5))
-    print(f"Host: {args.host}")
-    print(f"Port: {args.port}")
-    print(f"Advertised URL: {advertised_url}")
-    print(f"Data directory: {data_dir}")
-    print(f"Status: http://{args.host}:{args.port}/status")
-
-    app.run(
-        host=args.host,
-        port=args.port,
-        debug=False,
-    )
+            app.run(host=args.host, port=args.port, debug=False, use_reloader=False)
+    except (OSError, ValueError, StatePersistenceError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
