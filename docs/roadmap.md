@@ -57,6 +57,10 @@ acceptance gates. This is a design milestone, not a backend switch. Runtime
 multi-file transactionality (A03) and A11 (wallet schema/import snapshot
 validation) remain open. See the audit for the original finding.
 
+Mission 002-C1 introduces an injectable chain/mempool repository and staged
+commit-before-publish transitions. JSON remains the default; the node-wide
+unit of work and SQLite implementation are still pending in C2–C4.
+
 A01/A02 block deployment to an untrusted network. Until then, keep the
 trusted local testnet boundary. Each mission may be split into small PRs
 against the development branch; protocol changes require separate approval.

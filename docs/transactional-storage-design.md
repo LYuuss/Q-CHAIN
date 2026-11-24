@@ -207,5 +207,8 @@ performance gain in this design milestone.
 
 A03 remains open until the transactional backend is integrated and verified.
 A10's cooperative lock and A04's exclusive wallet creation remain in force.
-The next implementation PR may start 002-C1; any major architectural change
-or irreversible migration must stop for the maintainer.
+C1 implementation introduces the chain/mempool repository contract and
+commit-before-publish staging. It deliberately does not yet coordinate
+auxiliary files. C2 must extend the contract for a node-wide snapshot before
+SQLite can replace the JSON runtime. Any major architectural change or
+irreversible migration must stop for the maintainer.

@@ -88,6 +88,23 @@ reorg diagnostics and complete crash reconciliation remain Mission 002-C.
 See the [transactional storage design](transactional-storage-design.md) for the
 proposed migration. The JSON backend remains active.
 
+## Chain repository boundary (Mission 002-C1)
+
+`Blockchain` accepts an optional `ChainRepository` with exists/load/commit.
+The default `JsonChainRepository` preserves the existing chain.json format.
+`Blockchain.snapshot()` returns a detached copy of the persisted representation.
+Transaction admission, mining, external block acceptance and chain replacement
+stage changes in separate containers, commit the candidate snapshot, then
+publish the candidate in memory. A rejected transition does not commit; a
+persistence failure quarantines the original object without publishing the
+candidate. A commit failure may still have an uncertain durable outcome.
+Existing block/transaction objects are treated as read-only during staging.
+
+This is the authoritative chain/mempool boundary only. Node archive, pools,
+indexes, peers and reorg diagnostics still use the existing JSON writes and
+quarantine behavior. A node-wide transaction and SQLite activation are not
+implemented by C1. The same cooperative writer ownership is required.
+
 ## Corrupt or missing chain files
 
 A missing `chain.json` creates a new genesis chain. An existing malformed,
