@@ -61,6 +61,14 @@ Remediation: define commit boundary and failure policy; transactional storage (S
 
 ### A04 — Wallet creation race
 
+Follow-up (Mission 002-A): implementation addresses the creation race by
+defaulting wallet saves to exclusive publication and making authorized updates
+explicit. Coordinated regression tests cover concurrent creation, preservation
+of the winning keystore, and injected publication failure. This is a follow-up
+to the baseline finding below, not a rewrite of the historical audit.
+Concurrent intentional updates and strict import snapshot validation are out
+of scope; validation results are reported in the implementation PR.
+
 Evidence: src/wallet.py:save, load_or_create; src/qchain.py:113–128; src/storage_utils.py:atomic_write_json.
 Creation checks existence before generating and saving, but normal save uses overwrite=True. Concurrent creators targeting the same name can replace a newly published wallet. Backup/import already use atomic no-overwrite semantics; creation should do the same.
 
