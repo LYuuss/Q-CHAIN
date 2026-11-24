@@ -32,6 +32,25 @@ cryptocurrency launch or completion of every long-term research idea.
 | Consensus | Versioned protocol upgrades and retarget experiments | New rules need compatibility planning and independent validation. |
 | Testing | Process-kill fault injection and longer adversarial network simulations | The current suite covers specified regressions and controlled HTTP integration. |
 
+## Prioritized follow-up after Mission 001
+
+See the [technical audit](technical-audit.md) for the baseline, evidence,
+severity, and acceptance criteria. The following sequence is proposed for
+maintainer review; it does not mark any additional feature as implemented.
+
+| Mission | Scope | Acceptance focus |
+| --- | --- | --- |
+| 002 | State durability, exclusive wallet creation, writer ownership (A03/A04/A10) | No silent key replacement; failure/restart invariants; transactional migration plan |
+| 003 | Network trust boundary and cancellable mining (A01/A02) | Operator authorization, bounded outbound requests, responsive node |
+| 004 | Sync and fork resilience (A06/A07/A08) | Bounded batches/archive, convergence through partitions and restarts |
+| 005 | Protocol identity and numeric policy (A05/A09) | Reviewed versioned manifest and migration; deterministic consensus tests |
+| 006 | Wallet schema, performance, maintainability (A11/A12/A13) | Strict wallet snapshots, measured indexing performance, modular boundaries and reproducible builds |
+
+A01/A02 block deployment to an untrusted network. Until then, keep the
+trusted local testnet boundary. Each mission may be split into small PRs
+against the development branch; protocol changes require separate approval.
+The maintainer controls the stable release and merge to main.
+
 ## Research tracks
 
 Post-quantum signatures (ML-DSA, SLH-DSA, or hybrid schemes), useful Proof of Work,
