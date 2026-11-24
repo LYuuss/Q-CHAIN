@@ -137,6 +137,10 @@ def _prepare(snapshot: NodeSnapshot):
     if len(snapshot.reorgs) > 100:
         raise ValueError("Reorg history exceeds retention limit.")
     for event in snapshot.reorgs:
+        if not isinstance(event, dict):
+            raise ValueError("Invalid reorg event.")
+        if event.get("revision") is not None and (type(event["revision"]) is not int or event["revision"] < 0):
+            raise ValueError("Invalid reorg revision.")
         if event["old_tip"] not in blocks or event["new_tip"] not in blocks:
             raise ValueError("Reorg history references an unknown block.")
     # Serialize before locking SQLite; non-JSON values fail without writes.
