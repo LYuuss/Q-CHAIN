@@ -105,6 +105,25 @@ indexes, peers and reorg diagnostics still use the existing JSON writes and
 quarantine behavior. A node-wide transaction and SQLite activation are not
 implemented by C1. The same cooperative writer ownership is required.
 
+## SQLite snapshot repository (Mission 002-C2)
+
+`SQLiteStateRepository` stores a complete `NodeSnapshot` (chain/mempool,
+archive, fork membership, peers and reorg history) in one explicit SQL
+transaction. Initial creation reserves an exclusive new file; an existing
+invalid or unsupported database is never initialized automatically.
+Subsequent writes require the expected committed revision. Each operation
+uses a private connection, WAL, foreign keys, bounded busy timeout and FULL
+synchronous writes. Reads use a consistent transaction. Storage-level
+invariants are checked; callers still validate consensus and own the directory.
+A failed commit raises StatePersistenceError and callers must recover from disk.
+
+`SQLiteChainRepository` adapts the C1 contract for isolated library
+experiments. It refuses databases with nonempty node auxiliary state.
+It does not implement full node integration. JSON remains the runtime default;
+there is no migration command yet. Whole-snapshot replacement and replay are
+intentionally simple; performance and crash validation remain follow-up work.
+Use only isolated temporary databases at this stage.
+
 ## Corrupt or missing chain files
 
 A missing `chain.json` creates a new genesis chain. An existing malformed,

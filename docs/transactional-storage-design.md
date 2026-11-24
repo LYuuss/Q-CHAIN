@@ -209,6 +209,8 @@ A03 remains open until the transactional backend is integrated and verified.
 A10's cooperative lock and A04's exclusive wallet creation remain in force.
 C1 implementation introduces the chain/mempool repository contract and
 commit-before-publish staging. It deliberately does not yet coordinate
-auxiliary files. C2 must extend the contract for a node-wide snapshot before
-SQLite can replace the JSON runtime. Any major architectural change or
+auxiliary files. C2 extends the contract with NodeSnapshot and a transactional SQLite
+implementation. The draft reorg revision is nullable: imported legacy events
+have no historical revision and must not be assigned invented values.
+The node/CLI still use JSON; migration and integration remain C3/C4. Any major architectural change or
 irreversible migration must stop for the maintainer.
