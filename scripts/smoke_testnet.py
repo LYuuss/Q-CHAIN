@@ -24,7 +24,13 @@ class LocalNode:
         self.port = 0
 
     def start(self):
-        self.server = make_server("127.0.0.1", self.port, node.create_app(self.directory), threaded=True)
+        self.owner = ExitStack()
+        try:
+            app = self.owner.enter_context(node.owned_app(self.directory))
+            self.server = make_server("127.0.0.1", self.port, app, threaded=True)
+        except BaseException:
+            self.owner.close()
+            raise
         self.port = self.server.server_port
         self.url = f"http://127.0.0.1:{self.port}"
         self.thread = Thread(target=self.server.serve_forever, daemon=True)
@@ -35,6 +41,7 @@ class LocalNode:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        self.owner.close()
 
     def get(self, path):
         return fetch_json(self.url + path)

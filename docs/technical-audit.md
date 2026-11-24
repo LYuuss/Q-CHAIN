@@ -54,6 +54,12 @@ Remediation: cancellable bounded mining jobs using immutable snapshots; release 
 
 ### A03 — Crash consistency
 
+Follow-up (Mission 002-B): state snapshot errors propagate and quarantine the
+node; the local CLI exits nonzero. Restart reloads authoritative state and
+rebuilds derived indexes. The commit outcome can be uncertain if an auxiliary
+write or post-replacement directory fsync fails; multi-file transactionality
+and complete crash reconciliation remain open in Mission 002-C.
+
 Evidence: src/blockchain.py:211–270, 426–432, 717–736; src/node.py:423–447, 597–605, 967–970; src/storage_utils.py:atomic_write_json.
 Atomicity applies to each file separately. In-memory mutations precede saves; failures can leave a running node with state that was not durably committed. A crash after authoritative chain save but before derived indexes, fork pools or reorg history updates can leave inconsistent auxiliary state. Startup rebuilds the transaction index and mempool mirror, which mitigates part of this risk.
 
@@ -110,6 +116,12 @@ Individual transaction fields are bounded, but sums and account balances use unb
 Remediation: specify monetary range invariants, fee aggregation and deterministic selection that produces a valid coinbase. Add boundary tests with synthetic funded state; define mempool eviction/replacement as separate policy, not consensus.
 
 ### A10 — Cross-process state ownership
+
+Follow-up (Mission 002-B): supported node and local-chain CLI entry points
+hold a non-blocking OS directory lock over their lifetime. Embedded servers
+use the owned-app context; low-level library callers must coordinate ownership.
+Existing chain loads are read-only. Locks are cooperative and local-filesystem
+scoped; wallet update coordination is not part of this finding.
 
 Evidence: src/node.py:236–250; src/qchain.py:45–51; src/storage_utils.py:atomic_write_json.
 RLock is process-local. Two processes using the same state directory can overwrite independent snapshots. README correctly warns against this.

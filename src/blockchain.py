@@ -2,7 +2,7 @@ import os
 import time
 from functools import lru_cache
 
-from storage_utils import atomic_write_json, read_json_strict
+from storage_utils import StatePersistenceError, write_state_json, read_json_strict
 from block import Block
 from transaction import Transaction
 from config import (
@@ -53,6 +53,7 @@ class Blockchain:
         self.balances: dict[str, int] = {}
         self.nonces: dict[str, int] = {}
         self.mempool: list[Transaction] = []
+        self.persistence_failed = False
 
         if auto_load and os.path.exists(self.storage_path):
             self.load_from_disk()
@@ -72,19 +73,28 @@ class Blockchain:
         genesis.hash = genesis.compute_hash()
         return genesis
 
+    def require_healthy(self) -> None:
+        if self.persistence_failed:
+            raise StatePersistenceError("Chain state is quarantined; reopen from disk after checking storage.")
+
     def latest_block(self) -> Block:
+        self.require_healthy()
         return self.chain[-1]
 
     def get_state(self) -> tuple[dict[str, int], dict[str, int]]:
+        self.require_healthy()
         return self.balances.copy(), self.nonces.copy()
 
     def get_balance(self, address: str) -> int:
+        self.require_healthy()
         return self.balances.get(address, 0)
 
     def get_next_nonce(self, address: str) -> int:
+        self.require_healthy()
         return self.nonces.get(address, 0) + 1
 
     def save_to_disk(self) -> None:
+        self.require_healthy()
         data = {
             "difficulty": self.difficulty,
             "initial_difficulty": self.initial_difficulty,
@@ -97,9 +107,14 @@ class Blockchain:
             "mempool": [tx.to_dict() for tx in self.mempool],
         }
 
-        atomic_write_json(self.storage_path, data)
+        try:
+            write_state_json(self.storage_path, data)
+        except StatePersistenceError:
+            self.persistence_failed = True
+            raise
 
     def load_from_disk(self) -> None:
+        self.require_healthy()
         data = read_json_strict(self.storage_path)
         if not isinstance(data.get("chain"), list) or not data["chain"]:
             raise ValueError("Stored chain is empty or invalid; refusing to overwrite it.")
@@ -162,7 +177,8 @@ class Blockchain:
 
         self.clean_mempool()
         self.difficulty = self.calculate_next_difficulty()
-        self.save_to_disk()
+        # Loading an existing snapshot is read-only. The node may explicitly
+        # checkpoint repaired/migrated state while it owns the directory.
 
     def rebuild_state(self) -> None:
         self.balances, self.nonces = self.compute_state_for_chain(self.chain)
@@ -209,6 +225,7 @@ class Blockchain:
         self.mempool = selected
 
     def add_transaction(self, transaction: Transaction) -> bool:
+        self.require_healthy()
         if not transaction.has_valid_fields() or len(self.mempool) >= MAX_MEMPOOL_TRANSACTIONS:
             return False
         if transaction.is_coinbase():
@@ -246,6 +263,7 @@ class Blockchain:
         miner_address: str,
         max_transactions: int | None = None,
     ) -> bool:
+        self.require_healthy()
         if not is_address(miner_address):
             raise ValueError("Miner address must be 40 lowercase hexadecimal characters.")
         if max_transactions is None:
@@ -379,6 +397,7 @@ class Blockchain:
         the node should run /sync instead.
         """
 
+        self.require_healthy()
         if not block.has_valid_proof():
             return False, "Invalid block structure or Proof of Work."
         if block.timestamp > time.time() + MAX_FUTURE_BLOCK_SECONDS:
@@ -601,6 +620,7 @@ class Blockchain:
         return 16 ** block.difficulty
 
     def calculate_cumulative_work(self, chain: list[Block] | None = None) -> int:
+        self.require_healthy()
         if chain is None:
             chain = self.chain
 
@@ -672,9 +692,11 @@ class Blockchain:
         return True
 
     def is_valid(self) -> bool:
+        self.require_healthy()
         return self.is_valid_chain(self.chain)
 
     def replace_chain_if_better(self, candidate_chain: list[Block]) -> bool:
+        self.require_healthy()
         if len(candidate_chain) == 0:
             print("Candidate chain rejected: empty chain.")
             return False

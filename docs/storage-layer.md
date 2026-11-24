@@ -51,6 +51,41 @@ refreshes active block lookup, revalidates the mempool, and processes stored
 orphans and side branches. A journal entry or recent pool change can still be
 lost during an interrupted multi-file update.
 
+## Writer ownership and persistence failures (Mission 002-B)
+
+Supported node and local-chain CLI entry points acquire a non-blocking OS lock
+on `.qchain-state.lock` before initialization and hold it until the server or
+command finishes. A second owner fails with a nonzero exit status. The lock
+file is intentionally retained; its presence alone does not indicate an active
+owner. OS handle closure, including process death, releases the lock. Never
+delete the lock file to bypass an active owner. Use a local filesystem supporting
+POSIX flock or Windows byte-range locking; these are cooperative locks, not a
+defense against unrelated programs or unsupported network filesystems.
+
+Embedded server hosts must use `node.owned_app` for the entire serving lifetime
+(or hold `state_directory_lock` themselves). The low-level `create_app` and
+`Blockchain` constructors are not independent lock owners; direct callers
+must coordinate access. Existing chain loads no longer rewrite the snapshot.
+Local CLI read commands still acquire ownership because they can initialize a
+missing chain. Wallet-only and remote-node client commands do not take this lock.
+
+Node state writes use `write_state_json`: file fsync and atomic replacement,
+plus directory fsync on POSIX with errors propagated. Windows directory fsync
+is best effort. A state write failure raises `StatePersistenceError`.
+An authoritative chain object becomes unusable for normal reads/mutations after
+such a failure; discard it rather than saving stale memory. The HTTP node
+quarantines all routes (including health) with 503 until restarted; in-flight
+network calls recheck quarantine after reacquiring the state lock. The local
+CLI exits nonzero. Check storage and restart only after resolving the error.
+
+A failed response does not guarantee the operation was rolled back: the chain
+snapshot may already have been committed before an auxiliary write or directory
+fsync failed. Restart validates the authoritative chain and reconstructs derived
+indexes and the mempool mirror. Check the resulting tip/transaction before
+retrying. No successful local mutation is reported after quarantine; previously
+sent network messages cannot be recalled. Multi-file transactions, durable
+reorg diagnostics and complete crash reconciliation remain Mission 002-C.
+
 ## Corrupt or missing chain files
 
 A missing `chain.json` creates a new genesis chain. An existing malformed,

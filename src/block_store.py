@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from block import Block
-from storage_utils import atomic_write_json, read_json_or_default
+from storage_utils import write_state_json, read_json_or_default
 
 class BlockStore:
     def __init__(self, storage_path: str | Path):
@@ -43,7 +43,7 @@ class BlockStore:
             }
         }
 
-        atomic_write_json(self.storage_path, data)
+        write_state_json(self.storage_path, data)
 
     def put(self, block: Block, save: bool = True) -> None:
         self.blocks[block.hash] = block
