@@ -46,6 +46,12 @@ maintainer review; it does not mark any additional feature as implemented.
 | 005 | Protocol identity and numeric policy (A05/A09) | Reviewed versioned manifest and migration; deterministic consensus tests |
 | 006 | Wallet schema, performance, maintainability (A11/A12/A13) | Strict wallet snapshots, measured indexing performance, modular boundaries and reproducible builds |
 
+Mission 002-A addresses A04: exclusive wallet creation reuses atomic
+non-overwriting publication, with regression tests for competing creators and
+publication failures. Intentional password/encryption updates remain explicit.
+A03/A10 (state durability and writer ownership) and A11 (wallet schema/import
+snapshot validation) remain open. See the audit for the original finding.
+
 A01/A02 block deployment to an untrusted network. Until then, keep the
 trusted local testnet boundary. Each mission may be split into small PRs
 against the development branch; protocol changes require separate approval.

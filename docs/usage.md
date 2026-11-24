@@ -24,7 +24,10 @@ python src/qchain.py wallet-info alice
 ```
 
 Creation prompts for a password twice. Existing wallets are loaded without
-being replaced. Names are normalized to lowercase and contain 1–64 letters,
+being replaced. If concurrent creation wins after the initial existence check,
+the losing command exits with an error; retry to open the existing wallet with
+its original password. Creation never overwrites an existing file, even if it
+is malformed. Names are normalized to lowercase and contain 1–64 letters,
 digits, underscores, or hyphens, beginning with a letter or digit.
 
 Metadata inspection shows address, public key, encryption state, and format

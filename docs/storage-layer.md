@@ -31,8 +31,18 @@ to fsync the directory. Temporary files have owner-only permissions on POSIX.
 A failed serialization or replacement leaves the previous destination intact.
 NaN and infinite JSON numbers cannot be written.
 
-Wallet backup and import use an atomic, non-overwriting publication via a hard
-link. They fail if the destination already exists, preserving the existing file.
+Wallet creation, backup and import use an atomic, non-overwriting publication
+via a hard link in the destination filesystem. They fail if a concurrent writer
+has already published the destination, preserving its bytes. The filesystem
+must support hard links; unsupported publication fails rather than falling back
+to an unsafe replacement. Explicit password changes and legacy encryption use
+atomic replacement after loading the wallet. Python callers of
+`Wallet.save(path, password)` and `save_wallet_json(path, data)` now get exclusive
+creation by default; an intentional replacement must pass `overwrite=True`.
+`Wallet.load_or_create` loads an existing wallet normally and propagates
+`FileExistsError` if a competing creator wins. This is not a compare-and-swap
+protocol for concurrent password changes or imports; writer coordination and
+strict import snapshot validation remain separate work.
 
 Atomicity applies **per file**, not across all node files. The active chain and
 mempool share one snapshot, but caches, pools, and diagnostics may lag if the

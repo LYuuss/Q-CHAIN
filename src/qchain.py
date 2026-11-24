@@ -123,7 +123,12 @@ def create_wallet(name: str) -> Wallet:
     password = prompt_password(name, confirm=True)
 
     wallet = Wallet.generate()
-    wallet.save(str(path), password=password)
+    try:
+        wallet.save(str(path), password=password, overwrite=False)
+    except FileExistsError as error:
+        raise FileExistsError(
+            f"Wallet '{name}' already exists; retry to open the existing wallet."
+        ) from error
 
     return wallet
 
@@ -234,7 +239,7 @@ def command_wallet_encrypt(args) -> None:
     wallet = Wallet.load(str(path))
     password = prompt_password(args.name, confirm=True)
 
-    wallet.save(str(path), password=password)
+    wallet.save(str(path), password=password, overwrite=True)
 
     print(f"Wallet '{args.name}' encrypted successfully.")
     print(f"Address: {wallet.address}")
@@ -737,7 +742,7 @@ def command_wallet_info(args):
 def command_wallet_password(args):
     wallet = load_wallet_for_signing(args.name)
     password = prompt_password("new password", confirm=True)
-    wallet.save(str(wallet_path(args.name)), password=password)
+    wallet.save(str(wallet_path(args.name)), password=password, overwrite=True)
     print("Wallet password changed.")
 
 
