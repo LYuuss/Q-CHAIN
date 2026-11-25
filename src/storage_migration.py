@@ -183,17 +183,20 @@ def _sync_dir(directory):
             os.close(fd)
 
 
+def _require_new_database(path):
+    if any(os.path.lexists(str(path) + suffix) for suffix in ("", "-wal", "-shm", "-journal")):
+        raise FileExistsError("Destination database or sidecar already exists.")
+
+
 def import_json(source, destination):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if not source.is_dir() or not (source / "chain.json").is_file():
         raise ValueError("Source must contain an existing chain.json.")
     if destination.parent == source or source in destination.parents:
         raise ValueError("Choose a separate destination directory outside the source.")
-    if destination.exists():
-        raise FileExistsError("Destination database already exists.")
+    _require_new_database(destination)
     with _own(source, destination.parent):
-        if destination.exists():
-            raise FileExistsError("Destination database already exists.")
+        _require_new_database(destination)
         checksums = _checksums(source)
         snapshot, chain, warnings = read_legacy(source)
         with tempfile.TemporaryDirectory(prefix=".qchain-import-", dir=destination.parent) as work:
@@ -216,6 +219,7 @@ def import_json(source, destination):
             if _checksums(source) != checksums:
                 raise ValueError("Source changed during migration.")
             # Atomic no-overwrite publication, on the same destination filesystem.
+            _require_new_database(destination)
             os.link(candidate, destination)
             _sync_dir(destination.parent)
         return {"operation": "import", "destination": str(destination), "revision": revision,
