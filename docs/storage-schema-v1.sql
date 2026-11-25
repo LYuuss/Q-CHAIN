@@ -41,7 +41,7 @@ CREATE TABLE peers (
 
 CREATE TABLE reorg_history (
     sequence INTEGER PRIMARY KEY CHECK(sequence >= 0),
-    revision INTEGER NOT NULL UNIQUE CHECK(revision >= 0),
+    revision INTEGER CHECK(revision >= 0),
     old_tip TEXT NOT NULL REFERENCES blocks(hash),
     new_tip TEXT NOT NULL REFERENCES blocks(hash),
     event_json TEXT NOT NULL

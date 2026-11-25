@@ -59,7 +59,10 @@ validation) remain open. See the audit for the original finding.
 
 Mission 002-C1 introduces an injectable chain/mempool repository and staged
 commit-before-publish transitions. JSON remains the default; the node-wide
-unit of work and SQLite implementation are still pending in C2–C4.
+unit of work and SQLite implementation follow in C2–C4.
+Mission 002-C2 adds the opt-in SQLite full-node snapshot repository and a
+chain-only adapter, with version/revision and rollback regression coverage.
+Offline migration and runtime activation remain C3/C4; A03 remains open.
 
 A01/A02 block deployment to an untrusted network. Until then, keep the
 trusted local testnet boundary. Each mission may be split into small PRs
