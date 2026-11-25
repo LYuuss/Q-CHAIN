@@ -62,7 +62,8 @@ commit-before-publish transitions. JSON remains the default; the node-wide
 unit of work and SQLite implementation follow in C2–C4.
 Mission 002-C2 adds the opt-in SQLite full-node snapshot repository and a
 chain-only adapter, with version/revision and rollback regression coverage.
-Offline migration and runtime activation remain C3/C4; A03 remains open.
+C3 provides offline non-destructive import and verified JSON export; runtime
+activation remains C4 and operational validation C5. A03 remains open.
 
 A01/A02 block deployment to an untrusted network. Until then, keep the
 trusted local testnet boundary. Each mission may be split into small PRs
