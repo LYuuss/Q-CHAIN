@@ -1,8 +1,9 @@
-import os
 import time
+from copy import copy, deepcopy
 from functools import lru_cache
 
-from storage_utils import atomic_write_json, read_json_strict
+from storage_utils import StatePersistenceError
+from state_repository import ChainRepository, JsonChainRepository
 from block import Block
 from transaction import Transaction
 from config import (
@@ -34,6 +35,8 @@ class Blockchain:
         mining_reward: int = 50,
         storage_path: str = "../data/chain.json",
         auto_load: bool = True,
+        *,
+        repository: ChainRepository | None = None,
     ):
         if not is_integer(difficulty, MIN_DIFFICULTY, MAX_DIFFICULTY):
             raise ValueError("Invalid initial difficulty.")
@@ -43,6 +46,7 @@ class Blockchain:
         self.initial_difficulty = difficulty
         self.mining_reward = mining_reward
         self.storage_path = storage_path
+        self.repository = repository if repository is not None else JsonChainRepository(storage_path)
 
         self.target_block_time = TARGET_BLOCK_TIME_SECONDS
         self.difficulty_adjustment_interval = DIFFICULTY_ADJUSTMENT_INTERVAL
@@ -53,8 +57,9 @@ class Blockchain:
         self.balances: dict[str, int] = {}
         self.nonces: dict[str, int] = {}
         self.mempool: list[Transaction] = []
+        self.persistence_failed = False
 
-        if auto_load and os.path.exists(self.storage_path):
+        if auto_load and self.repository.exists():
             self.load_from_disk()
         else:
             self.chain = [self.create_genesis_block()]
@@ -72,20 +77,30 @@ class Blockchain:
         genesis.hash = genesis.compute_hash()
         return genesis
 
+    def require_healthy(self) -> None:
+        if self.persistence_failed:
+            raise StatePersistenceError("Chain state is quarantined; reopen from disk after checking storage.")
+
     def latest_block(self) -> Block:
+        self.require_healthy()
         return self.chain[-1]
 
     def get_state(self) -> tuple[dict[str, int], dict[str, int]]:
+        self.require_healthy()
         return self.balances.copy(), self.nonces.copy()
 
     def get_balance(self, address: str) -> int:
+        self.require_healthy()
         return self.balances.get(address, 0)
 
     def get_next_nonce(self, address: str) -> int:
+        self.require_healthy()
         return self.nonces.get(address, 0) + 1
 
-    def save_to_disk(self) -> None:
-        data = {
+    def snapshot(self) -> dict:
+        """Detached persisted representation; callers cannot mutate live state through it."""
+        self.require_healthy()
+        return deepcopy({
             "difficulty": self.difficulty,
             "initial_difficulty": self.initial_difficulty,
             "mining_reward": self.mining_reward,
@@ -95,12 +110,50 @@ class Blockchain:
             "max_difficulty": self.max_difficulty,
             "chain": [block.to_dict() for block in self.chain],
             "mempool": [tx.to_dict() for tx in self.mempool],
-        }
+        })
 
-        atomic_write_json(self.storage_path, data)
+    def save_to_disk(self) -> None:
+        self.require_healthy()
+        try:
+            self.repository.commit(self.snapshot())
+        except StatePersistenceError:
+            self.persistence_failed = True
+            raise
+
+    def _transition(self, operation, *args, accepted=bool):
+        """Stage a local transition, commit its snapshot, then publish it.
+
+        Existing blocks and transactions are treated as read-only by transition
+        methods. Copy mutable containers, not the repository or key material.
+        The caller remains responsible for exclusive writer/state ownership.
+        """
+        self.require_healthy()
+        staged = copy(self)
+        staged.chain = list(self.chain)
+        staged.mempool = list(self.mempool)
+        staged.balances = self.balances.copy()
+        staged.nonces = self.nonces.copy()
+        result = operation(staged, *args)
+        if not accepted(result):
+            return result
+        try:
+            self.repository.commit(staged.snapshot())
+        except StatePersistenceError:
+            self.persistence_failed = True
+            raise
+        # Preserve the live object identity used by node routes and explorer.
+        self.chain = staged.chain
+        self.mempool = staged.mempool
+        self.balances = staged.balances
+        self.nonces = staged.nonces
+        self.difficulty = staged.difficulty
+        if hasattr(staged, "last_reorg_recovery"):
+            self.last_reorg_recovery = staged.last_reorg_recovery
+        return result
 
     def load_from_disk(self) -> None:
-        data = read_json_strict(self.storage_path)
+        self.require_healthy()
+        data = self.repository.load()
         if not isinstance(data.get("chain"), list) or not data["chain"]:
             raise ValueError("Stored chain is empty or invalid; refusing to overwrite it.")
         if not isinstance(data.get("mempool", []), list):
@@ -162,7 +215,8 @@ class Blockchain:
 
         self.clean_mempool()
         self.difficulty = self.calculate_next_difficulty()
-        self.save_to_disk()
+        # Loading an existing snapshot is read-only. The node may explicitly
+        # checkpoint repaired/migrated state while it owns the directory.
 
     def rebuild_state(self) -> None:
         self.balances, self.nonces = self.compute_state_for_chain(self.chain)
@@ -209,6 +263,13 @@ class Blockchain:
         self.mempool = selected
 
     def add_transaction(self, transaction: Transaction) -> bool:
+        added = self._transition(Blockchain._stage_transaction, transaction)
+        if added:
+            print("Transaction added to mempool.")
+        return added
+
+    def _stage_transaction(self, transaction: Transaction) -> bool:
+        self.require_healthy()
         if not transaction.has_valid_fields() or len(self.mempool) >= MAX_MEMPOOL_TRANSACTIONS:
             return False
         if transaction.is_coinbase():
@@ -236,9 +297,6 @@ class Blockchain:
             return False
 
         self.mempool.append(transaction)
-        self.save_to_disk()
-
-        print("Transaction added to mempool.")
         return True
 
     def mine_pending_transactions(
@@ -246,6 +304,12 @@ class Blockchain:
         miner_address: str,
         max_transactions: int | None = None,
     ) -> bool:
+        return self._transition(Blockchain._stage_mining, miner_address, max_transactions)
+
+    def _stage_mining(
+        self, miner_address: str, max_transactions: int | None
+    ) -> bool:
+        self.require_healthy()
         if not is_address(miner_address):
             raise ValueError("Miner address must be 40 lowercase hexadecimal characters.")
         if max_transactions is None:
@@ -266,8 +330,6 @@ class Blockchain:
                 tx for tx in self.mempool
                 if id(tx) not in selected_ids
             ]
-
-            self.save_to_disk()
 
         return block_added
 
@@ -371,6 +433,9 @@ class Blockchain:
         return True
 
     def add_external_block(self, block: Block) -> tuple[bool, str]:
+        return self._transition(Blockchain._stage_external_block, block, accepted=lambda result: result[0])
+
+    def _stage_external_block(self, block: Block) -> tuple[bool, str]:
         """
         Add a block received from another node.
 
@@ -379,6 +444,7 @@ class Blockchain:
         the node should run /sync instead.
         """
 
+        self.require_healthy()
         if not block.has_valid_proof():
             return False, "Invalid block structure or Proof of Work."
         if block.timestamp > time.time() + MAX_FUTURE_BLOCK_SECONDS:
@@ -429,8 +495,6 @@ class Blockchain:
         self.difficulty = self.calculate_next_difficulty()
 
         self.clean_mempool()
-        self.save_to_disk()
-
         return True, "Block accepted."
 
     def _apply_block_transactions(
@@ -601,6 +665,7 @@ class Blockchain:
         return 16 ** block.difficulty
 
     def calculate_cumulative_work(self, chain: list[Block] | None = None) -> int:
+        self.require_healthy()
         if chain is None:
             chain = self.chain
 
@@ -672,9 +737,14 @@ class Blockchain:
         return True
 
     def is_valid(self) -> bool:
+        self.require_healthy()
         return self.is_valid_chain(self.chain)
 
     def replace_chain_if_better(self, candidate_chain: list[Block]) -> bool:
+        return self._transition(Blockchain._stage_replacement, candidate_chain)
+
+    def _stage_replacement(self, candidate_chain: list[Block]) -> bool:
+        self.require_healthy()
         if len(candidate_chain) == 0:
             print("Candidate chain rejected: empty chain.")
             return False
@@ -733,8 +803,6 @@ class Blockchain:
             "skipped_transactions": [],
             "mempool_size": len(self.mempool),
         }
-        self.save_to_disk()
-
         return True
 
     def print_mempool(self) -> None:

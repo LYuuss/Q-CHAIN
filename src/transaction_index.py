@@ -4,15 +4,18 @@ from typing import Any
 
 from block import Block
 from transaction import Transaction
-from storage_utils import atomic_write_json, read_json_or_default
+from storage_utils import write_state_json, read_json_or_default
 
 class TransactionIndex:
-    def __init__(self, storage_path: str | Path):
-        self.storage_path = Path(storage_path)
+    def __init__(self, storage_path: str | Path | None):
+        self.storage_path = Path(storage_path) if storage_path is not None else None
         self.transactions: dict[str, dict[str, Any]] = {}
-        self.load()
+        if self.storage_path is not None:
+            self.load()
 
     def load(self) -> None:
+        if self.storage_path is None:
+            return
         if not self.storage_path.exists():
             self.save()
             return
@@ -27,11 +30,13 @@ class TransactionIndex:
         self.transactions = data.get("transactions", {})
 
     def save(self) -> None:
+        if self.storage_path is None:
+            return
         data = {
             "transactions": dict(sorted(self.transactions.items()))
         }
 
-        atomic_write_json(self.storage_path, data)
+        write_state_json(self.storage_path, data)
 
     def rebuild_from_chain(self, chain: list[Block], save: bool = True) -> None:
         self.transactions = {}

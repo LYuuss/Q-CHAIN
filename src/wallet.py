@@ -17,8 +17,10 @@ from validation import is_hex, is_integer
 
 KDF_ITERATIONS = 390_000
 
-def save_wallet_json(wallet_path: str | Path, data: dict[str, Any]) -> None:
-    atomic_write_json(wallet_path, data)
+def save_wallet_json(
+    wallet_path: str | Path, data: dict[str, Any], *, overwrite: bool = False
+) -> None:
+    atomic_write_json(wallet_path, data, overwrite=overwrite)
 
 
 def load_wallet_json(wallet_path: str | Path) -> dict[str, Any]:
@@ -153,14 +155,10 @@ class Wallet:
 
         return wallet
 
-    def save(self, path: str, password: str) -> None:
+    def save(self, path: str, password: str, *, overwrite: bool = False) -> None:
+        """Publish a new keystore exclusively; replacement requires explicit opt-in."""
         if not password:
             raise ValueError("Password cannot be empty.")
-
-        directory = os.path.dirname(path)
-
-        if directory:
-            os.makedirs(directory, exist_ok=True)
 
         encryption_data = self._encrypt_private_key(
             private_key=self.private_key,
@@ -176,7 +174,7 @@ class Wallet:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        save_wallet_json(path, data)
+        save_wallet_json(path, data, overwrite=overwrite)
 
     @staticmethod
     def load_or_create(path: str, password: str) -> "Wallet":
@@ -184,7 +182,9 @@ class Wallet:
             return Wallet.load(path, password=password)
 
         wallet = Wallet.generate()
-        wallet.save(path, password=password)
+        # A concurrent creator may win after exists(); never replace its key.
+        # Propagate FileExistsError so callers must retry the normal load flow.
+        wallet.save(path, password=password, overwrite=False)
         return wallet
 
     def create_transaction(

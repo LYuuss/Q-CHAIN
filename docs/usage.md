@@ -24,7 +24,10 @@ python src/qchain.py wallet-info alice
 ```
 
 Creation prompts for a password twice. Existing wallets are loaded without
-being replaced. Names are normalized to lowercase and contain 1–64 letters,
+being replaced. If concurrent creation wins after the initial existence check,
+the losing command exits with an error; retry to open the existing wallet with
+its original password. Creation never overwrites an existing file, even if it
+is malformed. Names are normalized to lowercase and contain 1–64 letters,
 digits, underscores, or hyphens, beginning with a letter or digit.
 
 Metadata inspection shows address, public key, encryption state, and format
@@ -78,7 +81,9 @@ python src/qchain.py --data-dir ./experiments/demo mine alice
 
 Alternatively, set `QCHAIN_DATA_DIR` to an absolute path. The local CLI and nodes
 use separate default chain files even when they share the same data root.
-Do not run concurrent local CLI writers against one chain file.
+Local-chain commands acquire exclusive directory ownership and fail if another
+node or local-chain command already owns that directory. Existing chain reads
+no longer rewrite the snapshot, but a missing chain may still be initialized.
 
 ## Standalone HTTP nodes
 
@@ -108,7 +113,10 @@ python src/qchain.py node-balance 5001 bob
 synchronize a chain; use `node-sync` after reconnecting an out-of-date node.
 
 A node's `--data-dir` is its entire state directory. One process must own each
-writable directory. The default bind host is loopback. An advertised URL must
+writable directory; a second owner is rejected by the OS-backed lock. A node
+quarantined after a persistence error responds with HTTP 503 until restarted.
+Check disk health and inspect the recovered chain before retrying any operation.
+The default bind host is loopback. An advertised URL must
 be reachable by the peers; it is not necessarily the same hostname the user
 uses to access the node.
 
@@ -155,3 +163,8 @@ request can find no valid heavier chain.
 `src/main.py` is a compatibility entry point for the same CLI.
 
 See `python src/qchain.py --help` and `python src/node.py --help` for arguments.
+
+## Offline storage conversion
+
+See [storage and recovery](storage-layer.md#offline-migration-and-recovery-export-mission-002-c3)
+for the stopped-backup import/export commands. They do not activate SQLite.

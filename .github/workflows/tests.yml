@@ -36,7 +36,9 @@ jobs:
           python -m pytest
 
       - name: Exercise real HTTP nodes
-        run: python scripts/smoke_testnet.py
+        run: |
+          python scripts/smoke_testnet.py
+          python scripts/smoke_testnet.py --storage-backend sqlite
 
   docker:
     name: Docker testnet startup
