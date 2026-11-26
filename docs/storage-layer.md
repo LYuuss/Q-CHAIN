@@ -120,9 +120,39 @@ A failed commit raises StatePersistenceError and callers must recover from disk.
 `SQLiteChainRepository` adapts the C1 contract for isolated library
 experiments. It refuses databases with nonempty node auxiliary state.
 It does not implement full node integration. JSON remains the runtime default;
-there is no migration command yet. Whole-snapshot replacement and replay are
+offline conversion is available as described below; runtime activation is not. Whole-snapshot replacement and replay are
 intentionally simple; performance and crash validation remain follow-up work.
 Use only isolated temporary databases at this stage.
+
+## Offline migration and recovery export (Mission 002-C3)
+
+Stop all writers and take a verified backup of the entire state directory
+first (wallets are backed up separately). Run against that stopped copy:
+
+```bash
+python src/storage_migration.py import-json ./backup-node ./sqlite-copy/state.db
+python src/storage_migration.py export-json ./sqlite-copy/state.db ./recovered-json
+```
+
+Both commands take cooperative source and destination-parent locks and require
+a new destination outside the source directory. Import verifies consensus
+replay, state parity, SQLite integrity and source checksums before publishing
+the database with an exclusive hard link. Export validates the committed
+snapshot and reconstructs the JSON files and derived transaction index in a
+temporary directory before publishing it. The export includes a report with
+revision and file checksums; import prints a JSON report to stdout (redirect
+it to a separate file if desired). Missing or damaged auxiliary entries and
+legacy mempool reconciliation are reported. An invalid authoritative chain or
+changed authoritative mempool is rejected. Original state files are untouched.
+
+Use a local filesystem and cooperative processes; do not run unrelated
+programs against the destination parent during export. A failure after
+publication but during directory fsync may leave a complete destination:
+inspect it before retrying. A killed process can leave a hidden staging
+directory; it is not an active backend. No wallets are copied. A verified
+export of the latest SQLite revision is needed for rollback after new writes;
+the original JSON copy may be stale. Do not activate a database or replace a
+live directory using these commands. Runtime integration is still C4.
 
 ## Corrupt or missing chain files
 

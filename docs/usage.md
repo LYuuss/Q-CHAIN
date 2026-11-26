@@ -163,3 +163,8 @@ request can find no valid heavier chain.
 `src/main.py` is a compatibility entry point for the same CLI.
 
 See `python src/qchain.py --help` and `python src/node.py --help` for arguments.
+
+## Offline storage conversion
+
+See [storage and recovery](storage-layer.md#offline-migration-and-recovery-export-mission-002-c3)
+for the stopped-backup import/export commands. They do not activate SQLite.

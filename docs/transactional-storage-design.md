@@ -131,9 +131,12 @@ a reason to create a new genesis. Back up using SQLite's backup API or a
 documented stopped/checkpointed database procedure; never copy only the main
 database file while WAL writers are active.
 
-## 5. Reversible migration (proposed CLI, not yet implemented)
+## 5. Reversible migration (C3 offline prototype)
 
-The first implementation must be opt-in, offline and non-destructive.
+The C3 implementation is opt-in, offline and non-destructive. See
+[storage and recovery](storage-layer.md) for commands and limitations. The
+operator takes a stopped verified backup before conversion; the converter
+never copies wallets or activates a backend.
 Keep JSON as default until integration and migration gates are met.
 
 1. Stop the node/local CLI writer. Acquire the same canonical directory lock.
@@ -212,5 +215,6 @@ commit-before-publish staging. It deliberately does not yet coordinate
 auxiliary files. C2 extends the contract with NodeSnapshot and a transactional SQLite
 implementation. The draft reorg revision is nullable: imported legacy events
 have no historical revision and must not be assigned invented values.
-The node/CLI still use JSON; migration and integration remain C3/C4. Any major architectural change or
+C3 adds offline conversion and verification; the node/CLI still use JSON and
+runtime integration remains C4. Any major architectural change or
 irreversible migration must stop for the maintainer.
