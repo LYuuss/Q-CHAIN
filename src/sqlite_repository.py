@@ -1,6 +1,6 @@
 """Opt-in SQLite node snapshot repository (Mission 002-C2).
 
-No node/CLI activation or legacy migration occurs here. Callers own the
+Runtime activation and legacy migration are separate modules. Callers own the
 directory and validate consensus before commit. Each connection is private
 to one operation and closes before returning.
 """
@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
+from copy import deepcopy
 from pathlib import Path
 
 from block import Block
@@ -319,13 +320,19 @@ class SQLiteChainRepository:
     """
     def __init__(self, path: str | Path):
         self.state = SQLiteStateRepository(path)
+        self.revision = None
+        self.archive = []
+        self.loaded_chain = None
 
     def exists(self) -> bool:
         return self.state.exists()
 
     def load(self) -> ChainSnapshot:
-        _, snapshot = self.state.load_node()
+        revision, snapshot = self.state.load_node()
         self._require_chain_only(snapshot)
+        self.revision = revision
+        self.archive = snapshot.archive
+        self.loaded_chain = deepcopy(snapshot.chain)
         return snapshot.chain
 
     @staticmethod
@@ -334,9 +341,9 @@ class SQLiteChainRepository:
             raise StatePersistenceError("Node auxiliary state requires full-node commits.")
 
     def commit(self, snapshot: ChainSnapshot) -> None:
-        revision, archive = None, []
-        if self.exists():
-            revision, previous = self.state.load_node()
-            self._require_chain_only(previous)
-            archive = previous.archive
-        self.state.commit_node(NodeSnapshot(snapshot, archive), expected_revision=revision)
+        # A writer must load the existing revision first. Never refresh the
+        # lease at commit time: the staged chain may derive from stale state.
+        self.revision = self.state.commit_node(NodeSnapshot(snapshot, self.archive),
+                                               expected_revision=self.revision)
+        by_hash = {block["hash"]: block for block in self.archive + snapshot["chain"]}
+        self.archive = deepcopy(list(by_hash.values()))

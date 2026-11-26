@@ -23,6 +23,8 @@ from config import (
 from http_client import fetch_json, post_json, HttpJsonError
 from storage_utils import StatePersistenceError, atomic_write_json
 from state_lock import state_directory_lock
+from runtime_storage import require_backend
+from sqlite_repository import SQLiteChainRepository
 from wallet import load_wallet_json
 from validation import is_address
 
@@ -43,13 +45,19 @@ def normalize_node_url(node: str) -> str:
     return clean_node
 
 
-def load_chain() -> Blockchain:
-    return Blockchain(
+def load_chain(storage_backend="json") -> Blockchain:
+    database = require_backend(Path(CHAIN_PATH).parent, storage_backend)
+    repository = SQLiteChainRepository(database) if storage_backend == "sqlite" else None
+    chain = Blockchain(
         difficulty=DEFAULT_DIFFICULTY,
         mining_reward=DEFAULT_MINING_REWARD,
         storage_path=str(CHAIN_PATH),
         auto_load=True,
+        repository=repository,
     )
+    if repository is not None and repository.loaded_chain is not None and chain.snapshot() != repository.loaded_chain:
+        raise StatePersistenceError("SQLite authoritative chain/mempool differs after replay.")
+    return chain
 
 
 def wallet_path(name: str):
@@ -203,7 +211,7 @@ def print_status(chain: Blockchain) -> None:
 
 
 def command_status(args) -> None:
-    chain = load_chain()
+    chain = load_chain(getattr(args, "storage_backend", "json"))
     print_status(chain)
 
 
@@ -263,7 +271,7 @@ def command_wallets(args) -> None:
 
 
 def command_balance(args) -> None:
-    chain = load_chain()
+    chain = load_chain(getattr(args, "storage_backend", "json"))
     metadata = load_wallet_metadata(args.name)
 
     address = metadata["address"]
@@ -278,7 +286,7 @@ def command_balance(args) -> None:
 
 
 def command_mine(args) -> None:
-    chain = load_chain()
+    chain = load_chain(getattr(args, "storage_backend", "json"))
     metadata = load_wallet_metadata(args.miner)
 
     miner_address = metadata["address"]
@@ -298,7 +306,7 @@ def command_mine(args) -> None:
 
 
 def command_send(args) -> None:
-    chain = load_chain()
+    chain = load_chain(getattr(args, "storage_backend", "json"))
 
     sender_wallet = load_wallet_for_signing(args.sender)
     receiver_address = resolve_receiver_address(args.receiver)
@@ -334,12 +342,12 @@ def command_send(args) -> None:
 
 
 def command_mempool(args) -> None:
-    chain = load_chain()
+    chain = load_chain(getattr(args, "storage_backend", "json"))
     chain.print_mempool()
 
 
 def command_validate(args) -> None:
-    chain = load_chain()
+    chain = load_chain(getattr(args, "storage_backend", "json"))
 
     if chain.is_valid():
         print("Blockchain is valid.")
@@ -492,6 +500,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=f"{PROJECT_NAME} command line interface"
     )
+    parser.add_argument("--storage-backend", choices=("json", "sqlite"), default="json",
+                        help="Local chain backend (default: json; SQLite uses state.db)")
     parser.add_argument("--data-dir", type=Path, help="Local chain and wallet directory (before the command)")
 
     subparsers = parser.add_subparsers(

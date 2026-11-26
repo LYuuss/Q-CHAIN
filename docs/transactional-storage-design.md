@@ -1,7 +1,8 @@
 # Mission 002-C — Transactional storage design
 
-Status: proposed architecture and implementation plan; no runtime backend
-change or migration performed. Baseline: dev/v0.2 at 5e66cae (Mission 002-B).
+Status: architecture and implementation plan; C1–C4 implement opt-in
+transactional storage, while C5 operational validation remains pending.
+Baseline: dev/v0.2 at 5e66cae (Mission 002-B).
 Scope: A03, preserving the behavior and wire formats of v0.2.3-alpha. The
 maintainer must approve irreversible data changes or a breaking protocol
 decision; this document authorizes neither.
@@ -215,6 +216,9 @@ commit-before-publish staging. It deliberately does not yet coordinate
 auxiliary files. C2 extends the contract with NodeSnapshot and a transactional SQLite
 implementation. The draft reorg revision is nullable: imported legacy events
 have no historical revision and must not be assigned invented values.
-C3 adds offline conversion and verification; the node/CLI still use JSON and
-runtime integration remains C4. Any major architectural change or
-irreversible migration must stop for the maintainer.
+C3 adds offline conversion and verification. C4 adds explicit runtime
+selection; a lock-private workspace stages chain and auxiliary changes and
+commits before network I/O or response. JSON remains the default. The local
+CLI uses the chain-only adapter; see storage-layer.md for activation and limits.
+Any major architectural change or irreversible migration must stop for the
+maintainer.

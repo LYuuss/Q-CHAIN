@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise three real HTTP nodes in temporary directories, without Docker."""
 
+import argparse
 import json
 import logging
 import sys
@@ -19,14 +20,15 @@ from wallet import Wallet
 
 
 class LocalNode:
-    def __init__(self, directory):
+    def __init__(self, directory, backend="json"):
         self.directory = directory
+        self.backend = backend
         self.port = 0
 
     def start(self):
         self.owner = ExitStack()
         try:
-            app = self.owner.enter_context(node.owned_app(self.directory))
+            app = self.owner.enter_context(node.owned_app(self.directory, storage_backend=self.backend))
             self.server = make_server("127.0.0.1", self.port, app, threaded=True)
         except BaseException:
             self.owner.close()
@@ -50,14 +52,14 @@ class LocalNode:
         return post_json(self.url + path, {} if data is None else data, timeout=15)
 
 
-def run():
+def run(backend="json"):
     # A separate deterministic test network, never the user's default data.
     node.DEFAULT_DIFFICULTY = 1
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
     with TemporaryDirectory(prefix="qchain-smoke-") as directory, ExitStack() as stack:
         nodes = []
         for index in range(3):
-            server = LocalNode(Path(directory) / str(index)).start()
+            server = LocalNode(Path(directory) / str(index), backend).start()
             stack.callback(server.stop)
             nodes.append(server)
         a, b, c = nodes
@@ -81,7 +83,7 @@ def run():
         assert all(server.get(f"/balances/{miner.address}")["balance"] == 52 for server in nodes)
 
         # A new node downloads actual headers and missing block bodies over HTTP.
-        newcomer = LocalNode(Path(directory) / "newcomer").start()
+        newcomer = LocalNode(Path(directory) / "newcomer", backend).start()
         stack.callback(newcomer.stop)
         newcomer.post("/peers", {"peer": a.url})
         synced = newcomer.post("/sync")
@@ -91,7 +93,7 @@ def run():
         assert len(tips) == 1
         assert all(server.get("/status")["valid"] for server in nodes + [newcomer])
         result = {
-            "result": "PASS", "nodes": 3, "additional_sync_node": 1,
+            "result": "PASS", "storage_backend": backend, "nodes": 3, "additional_sync_node": 1,
             "height": 2, "bob_balance": 10, "miner_balance": 52, "coin": "QCOIN",
             "checks": ["peer discovery", "triangle block broadcast", "transaction broadcast",
                        "pending transaction restart", "mining and balances", "header-first sync"],
@@ -101,4 +103,6 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--storage-backend", choices=("json", "sqlite"), default="json")
+    run(parser.parse_args().storage_backend)
