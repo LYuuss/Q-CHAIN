@@ -18,15 +18,13 @@ from block import Block
 from blockchain import Blockchain
 from node import normalize_peer_url, MAX_ORPHAN_BLOCKS, MAX_SIDE_BRANCH_BLOCKS
 from sqlite_repository import SQLiteStateRepository
+from runtime_storage import STATE_FILES
 from state_lock import state_directory_lock
 from state_repository import NodeSnapshot
 from storage_utils import StatePersistenceError, read_json_strict, write_state_json
 from transaction import Transaction
 from transaction_index import TransactionIndex
 from validation import MAX_MEMPOOL_TRANSACTIONS
-
-STATE_FILES = ("chain.json", "mempool.json", "block_index.json", "orphan_blocks.json",
-               "side_branch_blocks.json", "peers.json", "reorg_history.json", "tx_index.json")
 
 
 class ReadOnlySnapshot:

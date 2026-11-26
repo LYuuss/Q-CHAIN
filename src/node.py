@@ -1,6 +1,7 @@
 import argparse
 import sys
 from contextlib import contextmanager
+from copy import deepcopy
 import json
 import re
 import time
@@ -27,6 +28,7 @@ from block_store import BlockStore
 from transaction_index import TransactionIndex
 from storage_utils import StatePersistenceError, write_state_json, read_json_or_default, read_json_strict
 from state_lock import state_directory_lock
+from runtime_storage import SQLiteNodeWorkspace, require_backend
 from http_client import fetch_json, post_json, HttpJsonError
 from validation import (
     is_address,
@@ -177,10 +179,10 @@ def extract_peer_url(payload: dict) -> str | None:
     return normalize_peer_url(peer_url)
 
 @contextmanager
-def owned_app(data_dir: Path, advertised_url: str | None = None):
+def owned_app(data_dir: Path, advertised_url: str | None = None, *, storage_backend: str = "json"):
     """Hold directory ownership around startup and the entire server lifetime."""
     with state_directory_lock(data_dir) as directory:
-        app = create_app(directory, advertised_url)
+        app = create_app(directory, advertised_url, storage_backend=storage_backend)
         try:
             yield app
         finally:
@@ -189,12 +191,15 @@ def owned_app(data_dir: Path, advertised_url: str | None = None):
             app.extensions["qchain_close_state"]()
 
 
-def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
+def create_app(data_dir: Path, advertised_url: str | None = None, *, storage_backend: str = "json") -> Flask:
     """Low-level factory; server hosts must hold state_directory_lock (see owned_app)."""
     normalized_advertised_url = normalize_peer_url(advertised_url)
     if advertised_url is not None and normalized_advertised_url is None:
         raise ValueError("Invalid advertised URL: expected an HTTP(S) origin.")
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    database = require_backend(data_dir, storage_backend)
+    workspace = SQLiteNodeWorkspace(database) if storage_backend == "sqlite" else None
 
     chain_path = data_dir / "chain.json"
     peers_path = data_dir / "peers.json"
@@ -204,56 +209,89 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     mempool_path = data_dir / "mempool.json"
     transaction_index_path = data_dir / "tx_index.json"
     reorg_history_path = data_dir / "reorg_history.json"
-    reorg_data = read_json_or_default(reorg_history_path, {"reorgs": []})
-    reorg_history = reorg_data.get("reorgs", [])
-    if not isinstance(reorg_history, list):
-        reorg_history = []
-    reorg_history = [entry for entry in reorg_history if isinstance(entry, dict)][-100:]
-    # chain.json is authoritative. Only import the old mirror during migration.
-    migrate_mempool = chain_path.exists() and "mempool" not in read_json_strict(chain_path)
+    if workspace is not None:
+        chain = workspace.open_chain(difficulty=DEFAULT_DIFFICULTY, mining_reward=DEFAULT_MINING_REWARD)
+        block_store = BlockStore(None)
+        block_store.blocks = workspace.archive()
+        block_store.put_many(chain.chain)
+        transaction_index = TransactionIndex(None)
+        transaction_index.rebuild_from_chain(chain.chain)
+        previous = workspace.previous
+        reorg_history = deepcopy(previous.reorgs) if previous else []
+        peers = set(previous.peers) if previous else set()
+        if any(normalize_peer_url(peer) != peer for peer in peers):
+            raise StatePersistenceError("SQLite state contains invalid peer origins.")
+        peers.discard(normalized_advertised_url)
+        orphan_blocks = {key: block_store.blocks[key] for key in previous.orphans} if previous else {}
+        side_branch_blocks = {key: block_store.blocks[key] for key in previous.side_branches} if previous else {}
+        if len(orphan_blocks) > MAX_ORPHAN_BLOCKS or len(side_branch_blocks) > MAX_SIDE_BRANCH_BLOCKS:
+            raise StatePersistenceError("SQLite fork pool exceeds runtime limits.")
+    else:
+        reorg_data = read_json_or_default(reorg_history_path, {"reorgs": []})
+        reorg_history = reorg_data.get("reorgs", [])
+        if not isinstance(reorg_history, list):
+            reorg_history = []
+        reorg_history = [entry for entry in reorg_history if isinstance(entry, dict)][-100:]
+        # chain.json is authoritative. Only import the old mirror during migration.
+        migrate_mempool = chain_path.exists() and "mempool" not in read_json_strict(chain_path)
 
-    chain = Blockchain(
-        difficulty=DEFAULT_DIFFICULTY,
-        mining_reward=DEFAULT_MINING_REWARD,
-        storage_path=str(chain_path),
-        auto_load=True,
-    )
+        chain = Blockchain(
+            difficulty=DEFAULT_DIFFICULTY,
+            mining_reward=DEFAULT_MINING_REWARD,
+            storage_path=str(chain_path),
+            auto_load=True,
+        )
 
-    block_store = BlockStore(block_store_path)
-    block_store.put_many(chain.chain)
+        block_store = BlockStore(block_store_path)
+        block_store.put_many(chain.chain)
 
-    transaction_index = TransactionIndex(transaction_index_path)
-    transaction_index.rebuild_from_chain(chain.chain)
+        transaction_index = TransactionIndex(transaction_index_path)
+        transaction_index.rebuild_from_chain(chain.chain)
 
-    loaded_peers = load_peers(peers_path)
+        loaded_peers = load_peers(peers_path)
 
-    peers = {
-        normalized_peer
-        for peer in sorted(loaded_peers)[:32]
-        if (normalized_peer := normalize_peer_url(peer)) is not None
-        and normalized_peer != normalized_advertised_url
-    }
+        peers = {
+            normalized_peer
+            for peer in sorted(loaded_peers)[:32]
+            if (normalized_peer := normalize_peer_url(peer)) is not None
+            and normalized_peer != normalized_advertised_url
+        }
 
-    save_peers(peers_path, peers)
+        save_peers(peers_path, peers)
 
-    orphan_blocks = load_block_pool(orphan_blocks_path)
-    block_store.put_many(list(orphan_blocks.values()))
+        orphan_blocks = load_block_pool(orphan_blocks_path)
+        block_store.put_many(list(orphan_blocks.values()))
 
-    side_branch_blocks = load_block_pool(side_branch_blocks_path)
-    block_store.put_many(list(side_branch_blocks.values()))
+        side_branch_blocks = load_block_pool(side_branch_blocks_path)
+        block_store.put_many(list(side_branch_blocks.values()))
 
-    if migrate_mempool:
-        chain.mempool = load_transaction_pool(mempool_path)
-        chain.clean_mempool()
-    # Persist the canonical/migrated snapshot only while owning the writer directory.
-    chain.save_to_disk()
-    save_transaction_pool(mempool_path, chain.mempool)
+        if migrate_mempool:
+            chain.mempool = load_transaction_pool(mempool_path)
+            chain.clean_mempool()
+        # Persist the canonical/migrated snapshot only while owning the writer directory.
+        chain.save_to_disk()
+        save_transaction_pool(mempool_path, chain.mempool)
 
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BYTES
     state_lock = RLock()
     persistence_failed = False
     closing = False
+
+    def checkpoint():
+        if workspace is not None:
+            # Sync may have adopted a previously orphaned block; remove active
+            # membership before the next network call, not just at request end.
+            active = {block.hash for block in chain.chain}
+            for pool in (orphan_blocks, side_branch_blocks):
+                for key in list(pool):
+                    if key in active:
+                        del pool[key]
+            try:
+                workspace.commit(chain, block_store.blocks, orphan_blocks,
+                                 side_branch_blocks, peers, reorg_history)
+            except Exception as error:
+                raise StatePersistenceError("SQLite node checkpoint failed; restart from committed state.") from error
 
     def close_state():
         nonlocal closing
@@ -289,9 +327,26 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 return jsonify({"error": "Request body must be a JSON object."}), 400
         return None
 
+    @app.after_request
+    def commit_state(response):
+        if workspace is None or not g.get("state_locked", False) or persistence_failed or closing:
+            return response
+        if response.status_code >= 500:
+            return app.make_response(persistence_error(StatePersistenceError("Unexpected error in SQLite unit of work.")))
+        if request.method != "POST":
+            return response
+        try:
+            checkpoint()
+        except StatePersistenceError as error:
+            return app.make_response(persistence_error(error))
+        return response
+
     @app.teardown_request
     def unlock_state(error=None):
+        nonlocal persistence_failed
         if g.pop("state_locked", False):
+            if workspace is not None and error is not None:
+                persistence_failed = True
             state_lock.release()
 
     @app.errorhandler(400)
@@ -307,6 +362,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         # this request waits on their response (including triangle broadcasts).
         locked = has_request_context() and g.get("state_locked", False)
         if locked:
+            checkpoint()
             state_lock.release()
         try:
             return function(*args, **kwargs)
@@ -335,7 +391,8 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         if len(peers) >= 32:
             return False, "Peer limit reached.", normalized_peer
         peers.add(normalized_peer)
-        save_peers(peers_path, peers)
+        if workspace is None:
+            save_peers(peers_path, peers)
 
         return True, "Peer added.", normalized_peer
 
@@ -343,13 +400,16 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
         transaction_index.rebuild_from_chain(chain.chain)
 
     def save_orphan_pool() -> None:
-        save_block_pool(orphan_blocks_path, orphan_blocks)
+        if workspace is None:
+            save_block_pool(orphan_blocks_path, orphan_blocks)
 
     def save_side_branch_pool() -> None:
-        save_block_pool(side_branch_blocks_path, side_branch_blocks)
+        if workspace is None:
+            save_block_pool(side_branch_blocks_path, side_branch_blocks)
 
     def save_mempool() -> None:
-        save_transaction_pool(mempool_path, chain.mempool)
+        if workspace is None:
+            save_transaction_pool(mempool_path, chain.mempool)
 
     def get_local_node_url() -> str:
         if advertised_url is not None:
@@ -491,8 +551,12 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                 "rejected_transaction_count": result["rejected_count"],
                 "reason": reason, "timestamp": time.time(),
             })
+            if workspace is not None:
+                # Multiple local reorgs before a checkpoint share one revision.
+                reorg_history[-1]["revision"] = (workspace.revision + 1) if workspace.revision is not None else 0
             del reorg_history[:-100]
-            write_state_json(reorg_history_path, {"reorgs": reorg_history})
+            if workspace is None:
+                write_state_json(reorg_history_path, {"reorgs": reorg_history})
         return result
 
     def get_sorted_peers_by_work() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -638,30 +702,6 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
 
                 candidate_chain = local_prefix + missing_blocks
 
-                old_chain = list(chain.chain)
-
-                replaced = chain.replace_chain_if_better(candidate_chain)
-
-                if replaced:
-                    block_store.put_many(chain.chain)
-                    refresh_transaction_index()
-
-                    mempool_recovery_result = recover_mempool_after_reorg(
-                        old_chain=old_chain,
-                        new_chain=chain.chain,
-                        reason=f"sync:{peer}",
-                    )
-
-                    mempool_recovery_results.append(
-                        {
-                            "peer": peer,
-                            "result": mempool_recovery_result,
-                        }
-                    )
-
-                    adopted = True
-                    current_work = chain.calculate_cumulative_work()
-
             except (urllib.error.URLError, TimeoutError, ValueError, KeyError, HttpJsonError) as error:
                 errors.append(
                     {
@@ -669,6 +709,31 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
                         "error": str(error),
                     }
                 )
+                continue
+
+            old_chain = list(chain.chain)
+
+            replaced = chain.replace_chain_if_better(candidate_chain)
+
+            if replaced:
+                block_store.put_many(chain.chain)
+                refresh_transaction_index()
+
+                mempool_recovery_result = recover_mempool_after_reorg(
+                    old_chain=old_chain,
+                    new_chain=chain.chain,
+                    reason=f"sync:{peer}",
+                )
+
+                mempool_recovery_results.append(
+                    {
+                        "peer": peer,
+                        "result": mempool_recovery_result,
+                    }
+                )
+
+                adopted = True
+                current_work = chain.calculate_cumulative_work()
 
         orphan_result = process_orphans()
         side_branch_result = try_adopt_side_branches()
@@ -1795,6 +1860,7 @@ def create_app(data_dir: Path, advertised_url: str | None = None) -> Flask:
     register_explorer(app, chain, transaction_index, reorg_history)
     process_orphans()
     try_adopt_side_branches()
+    checkpoint()
     return app
 
 def parse_args() -> argparse.Namespace:
@@ -1827,6 +1893,8 @@ def parse_args() -> argparse.Namespace:
         help="URL this node announces to peers, example: http://node1:5000",
     )
 
+    parser.add_argument("--storage-backend", choices=("json", "sqlite"), default="json",
+                        help="Explicit state backend (default: json; SQLite uses state.db)")
     return parser.parse_args()
 
 
@@ -1841,7 +1909,7 @@ def main() -> int:
     advertised_url = args.advertised_url
 
     try:
-        with owned_app(data_dir, advertised_url) as app:
+        with owned_app(data_dir, advertised_url, storage_backend=args.storage_backend) as app:
             print(f"{PROJECT_NAME} node")
             print("-" * (len(PROJECT_NAME) + 5))
             print(f"Host: {args.host}")

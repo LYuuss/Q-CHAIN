@@ -5,12 +5,15 @@ from block import Block
 from storage_utils import write_state_json, read_json_or_default
 
 class BlockStore:
-    def __init__(self, storage_path: str | Path):
-        self.storage_path = Path(storage_path)
+    def __init__(self, storage_path: str | Path | None):
+        self.storage_path = Path(storage_path) if storage_path is not None else None
         self.blocks: dict[str, Block] = {}
-        self.load()
+        if self.storage_path is not None:
+            self.load()
 
     def load(self) -> None:
+        if self.storage_path is None:
+            return
         if not self.storage_path.exists():
             self.save()
             return
@@ -36,6 +39,8 @@ class BlockStore:
                 continue
 
     def save(self) -> None:
+        if self.storage_path is None:
+            return
         data = {
             "blocks": {
                 block_hash: block.to_dict()

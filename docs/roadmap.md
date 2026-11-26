@@ -63,7 +63,10 @@ unit of work and SQLite implementation follow in C2–C4.
 Mission 002-C2 adds the opt-in SQLite full-node snapshot repository and a
 chain-only adapter, with version/revision and rollback regression coverage.
 C3 provides offline non-destructive import and verified JSON export; runtime
-activation remains C4 and operational validation C5. A03 remains open.
+activation is implemented in C4 using explicit JSON/SQLite selection,
+complete node checkpoints before network effects or acknowledgment, and
+chain-only CLI integration. C5 operational validation remains pending; JSON
+is still the default and A03 is not closed.
 
 A01/A02 block deployment to an untrusted network. Until then, keep the
 trusted local testnet boundary. Each mission may be split into small PRs

@@ -119,9 +119,10 @@ A failed commit raises StatePersistenceError and callers must recover from disk.
 
 `SQLiteChainRepository` adapts the C1 contract for isolated library
 experiments. It refuses databases with nonempty node auxiliary state.
-It does not implement full node integration. JSON remains the runtime default;
-offline conversion is available as described below; runtime activation is not. Whole-snapshot replacement and replay are
-intentionally simple; performance and crash validation remain follow-up work.
+It is used by the local CLI; the full node uses a separate workspace with
+complete SQLite commits. JSON remains the runtime default; offline conversion
+and explicit SQLite activation are available as described below. Whole-snapshot
+replacement and replay are intentionally simple; performance and crash validation remain follow-up work.
 Use only isolated temporary databases at this stage.
 
 ## Offline migration and recovery export (Mission 002-C3)
@@ -152,7 +153,49 @@ inspect it before retrying. A killed process can leave a hidden staging
 directory; it is not an active backend. No wallets are copied. A verified
 export of the latest SQLite revision is needed for rollback after new writes;
 the original JSON copy may be stale. Do not activate a database or replace a
-live directory using these commands. Runtime integration is still C4.
+live directory using these commands. Use the explicit runtime option below.
+
+## Explicit SQLite runtime (Mission 002-C4)
+
+On an isolated empty directory, or a separate reviewed C3 import named
+`state.db`, opt in explicitly:
+
+```bash
+python src/node.py --port 5001 --data-dir ./sqlite-copy --storage-backend sqlite
+python src/qchain.py --data-dir ./local-sqlite --storage-backend sqlite status
+```
+
+Use the same option on every local chain command (status, balance, mine,
+send, mempool, validate). Wallet files and remote HTTP CLI commands are
+unchanged. The CLI chain-only adapter rejects databases containing peers,
+fork pools or reorg diagnostics; inspect those via the node's HTTP APIs
+instead. Both entry points retain the directory ownership
+lock. The JSON default rejects a directory containing `state.db` or its
+sidecars; SQLite rejects legacy state JSON files and orphaned sidecars.
+Do not rename the database or use a mixed directory to bypass these checks.
+An invalid database or authoritative replay mismatch fails startup.
+
+In SQLite mode, the node uses a private working snapshot under the existing
+state lock. Chain staging and auxiliary archive, pools, peers and reorg
+events are committed as one complete revision before releasing that lock
+for a peer call, or before returning a local mutation response. No SQL
+transaction spans peer I/O. Multiple local transitions may share a revision.
+The working state is not visible to another HTTP request before a successful
+checkpoint. Confirmed transaction indexes are rebuilt in memory; no JSON
+mirrors are written. Reorg events created in this backend include their local
+commit revision; imported history retains whatever revision was present.
+
+A failure quarantines the node instead of publishing a partially staged
+state. Stop, inspect storage and restart from disk. A failure after SQLite
+commit may leave a complete new revision without a successful response or
+broadcast; inspect the committed transaction or block before retrying.
+This does not make distributed requests atomic or guarantee delivery.
+
+SQLite is an opt-in educational backend, not the new default. Use a supported
+local filesystem, cooperative writers and verified stopped backups. After
+SQLite writes, use C3 export for recovery to JSON rather than reopening a stale
+copy. Whole-snapshot commits and replay are intentionally simple; C5 further
+process-kill, operational recovery, and performance validation remains pending.
 
 ## Corrupt or missing chain files
 
